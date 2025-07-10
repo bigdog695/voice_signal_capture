@@ -1,0 +1,8 @@
+numpy>=1.24.0
+sounddevice>=0.4.6
+scapy>=2.5.0
+funasr>=0.8.1
+flask>=2.0.0
+sseclient-py>=1.7.2
+requests>=2.31.0
+pyzmq>=25.1.2 
