@@ -1,0 +1,151 @@
+Usage:
+  pjsua [options] [SIP URL to call]
+
+General options:
+  --config-file=file  Read the config/arguments from file.
+  --help              Display this help screen
+  --version           Display version info
+
+Logging options:
+  --log-file=fname    Log to filename (default stderr)
+  --log-level=N       Set log max level to N (0(none) to 6(trace)) (default=5)
+  --app-log-level=N   Set log max level for stdout display (default=4)
+  --log-append        Append instead of overwrite existing log file.
+
+  --color             Use colorful logging (default yes on Win32)
+  --no-color          Disable colorful logging
+  --light-bg          Use dark colors for light background (default is dark bg)
+  --no-stderr         Disable stderr
+
+SIP Account options:
+  --registrar=url     Set the URL of registrar server
+  --id=url            Set the URL of local ID (used in From header)
+  --realm=string      Set realm
+  --username=string   Set authentication username
+  --password=string   Set authentication password
+  --contact=url       Optionally override the Contact information
+  --contact-params=S  Append the specified parameters S in Contact header
+  --contact-uri-params=S  Append the specified parameters S in Contact URI
+  --proxy=url         Optional URL of proxy server to visit
+                      May be specified multiple times
+  --reg-timeout=SEC   Optional registration interval (default 300)
+  --rereg-delay=SEC   Optional auto retry registration interval (default 300)
+  --reg-use-proxy=N   Control the use of proxy settings in REGISTER.
+                      0=no proxy, 1=outbound only, 2=acc only, 3=all (default)
+  --publish           Send presence PUBLISH for this account
+  --mwi               Subscribe to message summary/waiting indication
+  --use-ims           Enable 3GPP/IMS related settings on this account
+  --use-srtp=N        Use SRTP?  0:disabled, 1:optional, 2:mandatory,
+                      3:optional by duplicating media offer (def:0)
+  --srtp-secure=N     SRTP require secure SIP? 0:no, 1:tls, 2:sips (def:1)
+  --use-100rel        Require reliable provisional response (100rel)
+  --use-timer=N       Use SIP session timers? (default=1)
+                      0:inactive, 1:optional, 2:mandatory, 3:always
+  --timer-se=N        Session timers expiration period, in secs (def:1800)
+  --timer-min-se=N    Session timers minimum expiration period, in secs (def:90)
+  --outb-rid=string   Set SIP outbound reg-id (default:1)
+  --auto-update-nat=N Enable/disable SIP traversal behind symmetric NAT (def: 1)
+                      0: disabled, 1:enabled with exception, 2: fully enabled
+  --disable-stun      Disable STUN for this account
+  --next-cred         Add another credentials
+
+SIP Account Control:
+  --next-account      Add more account
+
+Transport Options:
+  --set-qos           Enable QoS tagging for SIP and media.
+  --no-mci            Disable message composition indication (RFC 3994)
+  --local-port=port   Set TCP/UDP port. This implicitly enables both
+                      TCP and UDP transports on the specified port, unless
+                      if TCP or UDP is disabled.
+  --ip-addr=IP        Use the specifed address as SIP and RTP addresses.
+                      (Hint: the IP may be the public IP of the NAT/router)
+  --bound-addr=IP     Bind transports to this IP interface
+  --no-tcp            Disable TCP transport.
+  --no-udp            Disable UDP transport.
+  --nameserver=NS     Add the specified nameserver to enable SRV resolution
+                      This option can be specified multiple times.
+  --outbound=url      Set the URL of global outbound proxy server
+                      May be specified multiple times
+  --stun-srv=FORMAT   Set STUN server host or domain. This option may be
+                      specified more than once. FORMAT is hostdom[:PORT]
+  --upnp=if_name      Enable UPnP using the interface name. If interface is
+                      not specified, the first interface found will be used
+
+Audio Options:
+  --add-codec=name    Manually add codec (default is to enable all)
+  --dis-codec=name    Disable codec (can be specified multiple times)
+  --clock-rate=N      Override conference bridge clock rate
+  --snd-clock-rate=N  Override sound device clock rate
+  --stereo            Audio device and conference bridge opened in stereo mode
+  --null-audio        Use NULL audio device
+  --play-file=file    Register WAV file in conference bridge.
+                      This can be specified multiple times.
+  --play-tone=FORMAT  Register tone to the conference bridge.
+                      FORMAT is 'F1,F2,ON,OFF', where F1,F2 are
+                      frequencies, and ON,OFF=on/off duration in msec.
+                      This can be specified multiple times.
+  --auto-play         Automatically play the file (to incoming calls only)
+  --auto-play-hangup  Automatically hangup the file after file play completes
+  --auto-loop         Automatically loop incoming RTP to outgoing RTP
+  --auto-conf         Automatically put calls in conference with others
+  --rec-file=file     Open file recorder (extension can be .wav or .mp3)
+  --auto-rec          Automatically record conversation
+  --quality=N         Specify media quality (0-10, default=8)
+  --ptime=MSEC        Override codec ptime to MSEC (default=codec specific)
+  --no-vad            Disable VAD/silence detector (default=codec specific)
+  --ec-tail=MSEC      Set echo canceller tail length (default=200)
+  --ec-opt=OPT        Select echo canceller algorithm (0=default,
+                        1=speex, 2=suppressor, 3=WebRtc, 4=WebRtc AEC3)
+  --ilbc-mode=MODE    Set iLBC codec mode (20 or 30, default is 30)
+  --capture-dev=id    Audio capture device ID (default=-1)
+  --playback-dev=id   Audio playback device ID (default=-1)
+  --capture-lat=N     Audio capture latency, in ms (default=100)
+  --playback-lat=N    Audio playback latency, in ms (default=140)
+  --snd-auto-close=N  Auto close audio device when idle for N secs (default=1)
+                      Specify N=-1 to disable this feature.
+                      Specify N=0 for instant close when unused.
+  --no-tones          Disable audible tones
+  --jb-max-size       Specify jitter buffer maximum size, in msec (default=-1)
+  --extra-audio       Add one more audio stream
+
+Media Transport Options:
+  --use-ice           Enable ICE (default:no)
+  --ice-regular       Use ICE regular nomination (default: aggressive)
+  --ice-trickle=N     Use trickle ICE? 0:disabled, 1:half, 2:full (default=0)
+  --ice-max-hosts=N   Set maximum number of ICE host candidates
+  --ice-no-rtcp       Disable RTCP component in ICE (default: no)
+  --rtp-port=N        Base port to try for RTP (default=4000)
+  --rx-drop-pct=PCT   Drop PCT percent of RX RTP (for pkt lost sim, default: 0)
+  --tx-drop-pct=PCT   Drop PCT percent of TX RTP (for pkt lost sim, default: 0)
+  --use-turn          Enable TURN relay with ICE (default:no)
+  --turn-srv          Domain or host name of TURN server ("NAME:PORT" format)
+  --turn-tcp          Use TCP connection to TURN server (default no)
+  --turn-user         TURN username
+  --turn-passwd       TURN password
+  --rtcp-mux          Enable RTP & RTCP multiplexing (default: no)
+  --srtp-keying       SRTP keying method for outgoing SDP offer.
+                      0=SDES (default), 1=DTLS
+
+Buddy List (can be more than one):
+  --add-buddy url     Add the specified URL to the buddy list.
+
+User Agent options:
+  --auto-answer=code  Automatically answer incoming calls with code (e.g. 200)
+  --max-calls=N       Maximum number of concurrent calls (default:4, max:255)
+  --thread-cnt=N      Number of worker threads (default:1)
+  --duration=SEC      Set maximum call duration (default:no limit)
+  --norefersub        Suppress event subscription when transferring calls
+  --use-compact-form  Minimize SIP message size
+  --no-force-lr       Allow strict-route to be used (i.e. do not force lr)
+  --accept-redirect=N Specify how to handle call redirect (3xx) response.
+                      0: reject, 1: follow automatically,
+                      2: follow + replace To header (default), 3: ask
+
+CLI options:
+  --use-cli           Use CLI as user interface
+  --cli-telnet-port=N CLI telnet port
+  --no-cli-console    Disable CLI console
+
+
+When URL is specified, pjsua will immediately initiate call to that URL
