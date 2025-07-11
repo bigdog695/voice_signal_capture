@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Chat</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 侧边栏 -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>Call History</h2>
+            </div>
+            
+            <!-- 活跃通话显示区域 -->
+            <div class="active-call-section" id="activeCallSection" style="display: none;">
+                <div class="active-call-indicator">
+                    <div class="call-status-badge">
+                        <div class="pulse-dot"></div>
+                        <span>Live Call</span>
+                    </div>
+                    <div class="active-call-info">
+                        <div class="call-title">正在通话中...</div>
+                        <div class="call-time" id="activeCallTime">00:00</div>
+                    </div>
+                    <button class="view-call-btn" id="viewActiveCallBtn">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M8 1a2.5 2.5 0 0 1 2.5 2.5V4h-5v-.5A2.5 2.5 0 0 1 8 1zm3.5 3v-.5a3.5 3.5 0 1 0-7 0V4H1v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V4h-3.5zM2 5h12v9a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5z"/>
+                        </svg>
+                        查看
+                    </button>
+                </div>
+            </div>
+            
+            <div class="chat-history" id="chatHistory">
+                <!-- 聊天历史列表将在这里动态生成 -->
+            </div>
+            
+            <div class="sidebar-footer">
+                <div class="connection-status" id="connectionStatus">
+                    <div class="status-indicator disconnected"></div>
+                    <span>Disconnected</span>
+                </div>
+                <button class="settings-btn" id="settingsBtn">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
+                        <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.292-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.292c.415.764-.42 1.6-1.185 1.184l-.292-.159a1.873 1.873 0 0 0-2.692 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.693-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.292A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115l.094-.319z"/>
+                    </svg>
+                    Settings
+                </button>
+            </div>
+        </div>
+
+        <!-- 主聊天区域 -->
+        <div class="main-content">
+            <div class="chat-container">
+                <div class="chat-header">
+                    <h3 id="chatTitle">Select a Call</h3>
+                    <div class="chat-actions">
+                        <button class="action-btn" id="refreshBtn" title="Refresh Call List">
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/>
+                                <path fill-rule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5.002 5.002 0 0 0 8 3zM3.1 9a5.002 5.002 0 0 0 8.757 2.182.5.5 0 1 1 .771.636A6.002 6.002 0 0 1 2.083 9H3.1z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="messages-container" id="messagesContainer">
+                    <div class="no-call-selected" id="noCallSelected">
+                        <h2>Call Records Display</h2>
+                        <p>Select a call from the left sidebar to view its transcript and details.</p>
+                    </div>
+                    
+                    <!-- 实时通话窗口 -->
+                    <div class="live-call-display" id="liveCallDisplay" style="display: none;">
+                        <div class="live-call-header">
+                            <h3>Live Call Session</h3>
+                            <div class="call-controls">
+                                <div class="connection-indicator connected" id="liveConnectionIndicator">
+                                    <span>Connected</span>
+                                </div>
+                                <button class="minimize-btn" id="minimizeLiveCallBtn" title="Minimize">
+                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                                        <path d="M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8z"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="live-messages" id="liveMessages">
+                            <!-- 实时消息将在这里显示 -->
+                        </div>
+                    </div>
+                    
+                    <!-- 通话记录展示区域 -->
+                    <div class="call-display" id="callDisplay" style="display: none;">
+                        <div class="call-info" id="callInfo">
+                            <div class="call-metadata">
+                                <div class="call-duration" id="callDuration">Duration: --:--</div>
+                                <div class="call-date" id="callDate">Date: --</div>
+                            </div>
+                        </div>
+                        
+                        <div class="transcript-display" id="transcriptDisplay">
+                            <div class="transcript-section">
+                                <div class="speaker-label">User:</div>
+                                <div class="transcript-content" id="userTranscriptContent">
+                                    No user transcript available
+                                </div>
+                            </div>
+                            <div class="transcript-section">
+                                <div class="speaker-label">AI Assistant:</div>
+                                <div class="transcript-content" id="assistantTranscriptContent">
+                                    No assistant transcript available
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- 设置模态框 -->
+    <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Settings</h3>
+                <button class="close-btn" id="closeSettingsBtn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="setting-group">
+                    <label for="websocketUrl">WebSocket Server URL:</label>
+                    <input type="text" id="websocketUrl" placeholder="ws://localhost:8000" value="ws://localhost:8000/chatting?id=test_001">
+                </div>
+                <div class="setting-group">
+                    <label for="apiModel">AI Model:</label>
+                    <select id="apiModel">
+                        <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                        <option value="gpt-4">GPT-4</option>
+                        <option value="claude">Claude</option>
+                        <option value="local">Local Model</option>
+                    </select>
+                </div>
+                <div class="setting-group">
+                    <label for="maxTokens">Max Tokens:</label>
+                    <input type="number" id="maxTokens" min="1" max="4000" value="2000">
+                </div>
+                <div class="setting-group">
+                    <label for="temperature">Temperature:</label>
+                    <input type="range" id="temperature" min="0" max="2" step="0.1" value="0.7">
+                    <span id="temperatureValue">0.7</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancelSettingsBtn">Cancel</button>
+                <button class="btn btn-primary" id="saveSettingsBtn">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

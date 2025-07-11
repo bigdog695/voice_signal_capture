@@ -1,0 +1,57 @@
+{
+  "name": "chat-frontend",
+  "version": "1.0.0",
+  "description": "Electron Chat Frontend with WebSocket",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --config electron-builder.json",
+    "build:win": "electron-builder --win --config electron-builder.json",
+    "build:mac": "electron-builder --mac --config electron-builder.json",
+    "build:linux": "electron-builder --linux --config electron-builder.json",
+    "pack": "electron-builder --dir --config electron-builder.json",
+    "dist": "electron-builder --publish=never --config electron-builder.json",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "keywords": [
+    "electron",
+    "chat",
+    "websocket",
+    "ai"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^25.0.0",
+    "electron-builder": "^24.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "build": {
+    "appId": "com.example.chat-frontend",
+    "productName": "AI Chat",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "renderer.js",
+      "index.html",
+      "styles.css"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png"
+    }
+  }
+}
