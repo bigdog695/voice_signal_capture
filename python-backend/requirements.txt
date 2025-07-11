@@ -1,5 +1,18 @@
-fastapi==0.104.1
-uvicorn==0.24.0
+# 基础Web服务器依赖
+fastapi==0.115.0
+uvicorn[standard]==0.30.1
 websockets==12.0
 pydantic>=2.0.0
 python-multipart==0.0.6
+
+# ASR相关依赖 - 模仿asr folder的requirements
+modelscope
+funasr>=0.8.1
+torch==2.1.2
+torchaudio==2.1.2  # funasr的隐式依赖，用于音频处理
+numpy==1.26.4
+transformers  # ModelScope需要此库来从HuggingFace Hub下载模型
+
+# 音频处理依赖（可选，如果需要）
+# librosa  # 音频处理库
+# soundfile  # 音频文件读写

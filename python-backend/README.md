@@ -1,13 +1,15 @@
-# Voice Chat Python Backend
+# Voice Chat Backend with ASR
 
-这是一个基于FastAPI的语音聊天后端服务器，提供REST API和WebSocket功能。
+基于asr文件夹架构优化的语音聊天后端服务，支持实时语音识别和WebSocket通信。
 
 ## 功能特性
 
-- **REST API**: 获取用户聊天历史列表
-- **WebSocket**: 实时聊天连接和消息推送
-- **CORS支持**: 允许跨域请求
-- **示例数据**: 内置测试数据
+- 🎯 **实时语音聊天**: WebSocket支持的实时聊天功能
+- 🎤 **语音识别**: 集成FunASR流式语音识别
+- 🐳 **Docker化部署**: 完整的Docker支持，模型预下载
+- 🔄 **Mock模式**: 当ASR不可用时自动降级到Mock模式
+- 📋 **RESTful API**: 完整的聊天记录管理API
+- 🔍 **健康检查**: 服务状态监控端点
 
 ## API 端点
 

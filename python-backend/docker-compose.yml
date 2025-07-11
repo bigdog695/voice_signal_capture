@@ -1,0 +1,20 @@
+# Docker Compose for Voice Chat Backend with ASR
+version: '3.8'
+
+services:
+  voice-chat-backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # 可选：挂载模型缓存目录以避免重复下载
+      - ./model_cache:/root/.cache/funasr
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

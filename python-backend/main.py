@@ -7,6 +7,27 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel
 from datetime import datetime
 import uuid
+import numpy as np
+import logging
+
+# ASR相关配置
+MODEL_NAME: str = "paraformer-zh-streaming"
+MODEL_REV: str = "v2.0.4"
+DEVICE: str = "cpu"
+
+# 音频参数配置
+CHUNK_SIZE = [0, 10, 5]  # 600ms frame
+ENC_LB = 4  # encoder look-back (chunks)
+DEC_LB = 1  # decoder look-back (chunks)
+SAMPLES_PER_FRAME = CHUNK_SIZE[1] * 960  # 9600
+BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2   # 19200 (16-bit PCM)
+
+# 设置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+log = logging.getLogger("VoiceChatBackend")
 
 # 数据模型
 class ChatMessage(BaseModel):
@@ -26,88 +47,94 @@ class ChatSession(BaseModel):
     messages: List[ChatMessage] = []
 
 # 创建FastAPI应用
-app = FastAPI(title="Voice Chat Backend", version="1.0.0")
+app = FastAPI(title="Voice Chat Backend with ASR", version="2.0.0")
 
-# CORS设置
+# CORS设置 - 模仿asr folder的配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000", "http://localhost:5173", 
+        "http://localhost:5174", "http://localhost:5175",
+        "http://127.0.0.1:3000", "http://127.0.0.1:5173", 
+        "http://127.0.0.1:5174", "http://127.0.0.1:5175",
+        "*"  # 开发阶段允许所有域
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ASR模型初始化 - FunASR是必选项
+asr_model = None
+try:
+    log.info(f"加载FunASR模型 '{MODEL_NAME}' (streaming)...")
+    from funasr import AutoModel
+    asr_model = AutoModel(
+        model=MODEL_NAME,
+        model_revision=MODEL_REV,
+        mode="online",
+        device=DEVICE,
+        hub="hf",  # 使用Hugging Face hub
+    )
+    log.info("ASR模型加载成功")
+except ImportError as e:
+    log.error("FunASR未安装！这是必选依赖，请安装FunASR")
+    log.error("安装命令: pip install funasr modelscope torch torchaudio")
+    raise RuntimeError("FunASR是必选依赖，请先安装") from e
+except Exception as exc:
+    log.error(f"ASR模型加载失败: {exc}")
+    log.error("请检查网络连接和模型下载")
+    raise RuntimeError(f"ASR模型加载失败: {exc}") from exc
 
 # 模拟数据库
 chat_sessions: Dict[str, ChatSession] = {}
 active_connections: Dict[str, WebSocket] = {}
 user_chat_history: Dict[str, List[str]] = {}  # user_id -> [chat_id, ...]
 
-# 初始化一些示例数据
-def init_sample_data():
-    """初始化示例数据"""
-    user_id = "user_001"
-    
-    # 创建几个示例聊天记录
-    for i in range(3):
-        chat_id = f"chat_{i+1:03d}"
-        session = ChatSession(
-            id=chat_id,
-            user_id=user_id,
-            title=f"Call Session {i+1}",
-            status="ended",
-            created_at=datetime.now(),
-            ended_at=datetime.now(),
-            messages=[
-                ChatMessage(
-                    id=f"msg_{chat_id}_001",
-                    chat_id=chat_id,
-                    speaker="user",
-                    content=f"你好，这是第{i+1}次通话的用户消息。",
-                    timestamp=datetime.now()
-                ),
-                ChatMessage(
-                    id=f"msg_{chat_id}_002",
-                    chat_id=chat_id,
-                    speaker="assistant",
-                    content=f"您好！这是第{i+1}次通话的AI回复。很高兴为您服务。",
-                    timestamp=datetime.now()
-                )
-            ]
-        )
-        chat_sessions[chat_id] = session
-        
-        # 添加到用户聊天历史
-        if user_id not in user_chat_history:
-            user_chat_history[user_id] = []
-        user_chat_history[user_id].append(chat_id)
-    
-    # 创建一个活跃的聊天会话
-    active_chat_id = "chat_active_001"
-    active_session = ChatSession(
-        id=active_chat_id,
-        user_id=user_id,
-        title="Active Call Session",
-        status="active",
-        created_at=datetime.now(),
-        messages=[
-            ChatMessage(
-                id=f"msg_{active_chat_id}_001",
-                chat_id=active_chat_id,
-                speaker="user",
-                content="这是一个正在进行的通话...",
-                timestamp=datetime.now()
-            )
-        ]
-    )
-    chat_sessions[active_chat_id] = active_session
-    user_chat_history[user_id].append(active_chat_id)
-
-# 启动时初始化数据
-init_sample_data()
-
 @app.get("/")
 async def root():
-    return {"message": "Voice Chat Backend API", "version": "1.0.0"}
+    """根端点"""
+    return {
+        "message": "Voice Chat Backend with ASR Service",
+        "status": "healthy",
+        "asr_model": MODEL_NAME,
+        "endpoints": {
+            "chat_list": "/chat/list?id=user_001",
+            "chat_detail": "/chat/{chat_id}",
+            "websocket_chat": "/chatting?id=chat_id",
+            "websocket_asr": "/ws",
+            "health": "/health",
+            "asr_info": "/asr/info"
+        },
+        "version": "2.0.0"
+    }
+
+@app.get("/health")
+async def health_check():
+    """健康检查端点"""
+    return {
+        "status": "healthy",
+        "asr_available": True,  # FunASR是必选的
+        "active_connections": len(active_connections),
+        "total_chats": len(chat_sessions),
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/asr/info")
+async def asr_info():
+    """ASR服务信息端点"""
+    return {
+        "status": "available",
+        "model": MODEL_NAME,
+        "model_revision": MODEL_REV,
+        "device": DEVICE,
+        "chunk_size": CHUNK_SIZE,
+        "samples_per_frame": SAMPLES_PER_FRAME,
+        "bytes_per_frame": BYTES_PER_FRAME
+    }
+
+# 启动时初始化数据
+# init_sample_data()  # 移到文件末尾
 
 @app.get("/chat/list")
 async def get_chat_list(id: str):
@@ -211,10 +238,10 @@ async def chatting_websocket(websocket: WebSocket, id: str):
     
     # 发送一些模拟的历史消息
     mock_messages = [
-        {"speaker": "user", "content": "你好，我想咨询一些问题。"},
-        {"speaker": "assistant", "content": "您好！我很乐意为您提供帮助。请告诉我您想了解什么？"},
-        {"speaker": "user", "content": "我想了解关于人工智能的发展趋势。"},
-        {"speaker": "assistant", "content": "人工智能确实是一个非常热门的领域。目前主要的发展趋势包括大语言模型、多模态AI、自动驾驶等方向。"}
+        {"speaker": "user", "content": "你好，我想反映一个冰箱维修的问题。"},
+        {"speaker": "assistant", "content": "您好！我是客服人员，很高兴为您服务。请详细描述一下具体情况。"},
+        {"speaker": "user", "content": "我在2020年购买的冰箱现在出现故障，商家不予维修。"},
+        {"speaker": "assistant", "content": "这种情况确实需要核查。请提供商家的详细信息，我们会尽快处理。"}
     ]
     
     for i, msg in enumerate(mock_messages):
@@ -263,131 +290,132 @@ async def chatting_websocket(websocket: WebSocket, id: str):
 
 async def simulate_conversation(websocket: WebSocket, chat_id: str):
     """
-    模拟实时语音识别对话，快速密集推送消息
+    模拟实时语音识别对话，快速密集推送消息 - 客服投诉场景
     """
     try:
-        # 模拟实时语音识别 - 超快速推送
+        # 模拟实时语音识别 - 客服投诉场景
         conversation_segments = [
-            # 第一阶段：问候和介绍 - 用户第一句话
+            # 第一阶段：问候和开场 - 用户第一句话
             {"speaker": "user", "content": "你", "delay": 0.3, "message_group": "user_msg_1"},
             {"speaker": "user", "content": "你好", "delay": 0.2, "message_group": "user_msg_1"},
             {"speaker": "user", "content": "你好，", "delay": 0.15, "message_group": "user_msg_1"},
             {"speaker": "user", "content": "你好，我", "delay": 0.2, "message_group": "user_msg_1"},
             {"speaker": "user", "content": "你好，我想", "delay": 0.3, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我想了", "delay": 0.2, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我想了解", "delay": 0.25, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我想了解一下", "delay": 0.3, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我想了解一下人工", "delay": 0.2, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我想了解一下人工智能", "delay": 0.4, "message_group": "user_msg_1"},
+            {"speaker": "user", "content": "你好，我想投", "delay": 0.2, "message_group": "user_msg_1"},
+            {"speaker": "user", "content": "你好，我想投诉", "delay": 0.25, "message_group": "user_msg_1"},
+            {"speaker": "user", "content": "你好，我想投诉一个", "delay": 0.3, "message_group": "user_msg_1"},
+            {"speaker": "user", "content": "你好，我想投诉一个电器", "delay": 0.2, "message_group": "user_msg_1"},
+            {"speaker": "user", "content": "你好，我想投诉一个电器商家", "delay": 0.4, "message_group": "user_msg_1"},
             
-            # AI回复
+            # 客服回复
             {"speaker": "assistant", "content": "您", "delay": 0.6, "message_group": "assistant_msg_1"},
             {"speaker": "assistant", "content": "您好", "delay": 0.2, "message_group": "assistant_msg_1"},
             {"speaker": "assistant", "content": "您好！", "delay": 0.15, "message_group": "assistant_msg_1"},
             {"speaker": "assistant", "content": "您好！我", "delay": 0.2, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我很", "delay": 0.2, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我很乐意", "delay": 0.25, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我很乐意为", "delay": 0.2, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我很乐意为您", "delay": 0.2, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我很乐意为您介绍", "delay": 0.3, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我很乐意为您介绍人工", "delay": 0.2, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我很乐意为您介绍人工智能", "delay": 0.4, "message_group": "assistant_msg_1"},
+            {"speaker": "assistant", "content": "您好！我是", "delay": 0.2, "message_group": "assistant_msg_1"},
+            {"speaker": "assistant", "content": "您好！我是客服", "delay": 0.25, "message_group": "assistant_msg_1"},
+            {"speaker": "assistant", "content": "您好！我是客服人员", "delay": 0.2, "message_group": "assistant_msg_1"},
+            {"speaker": "assistant", "content": "您好！我是客服人员，请", "delay": 0.2, "message_group": "assistant_msg_1"},
+            {"speaker": "assistant", "content": "您好！我是客服人员，请详细", "delay": 0.3, "message_group": "assistant_msg_1"},
+            {"speaker": "assistant", "content": "您好！我是客服人员，请详细说明", "delay": 0.2, "message_group": "assistant_msg_1"},
+            {"speaker": "assistant", "content": "您好！我是客服人员，请详细说明您的投诉情况", "delay": 0.4, "message_group": "assistant_msg_1"},
             
-            # 第二阶段：深入讨论 - 用户第二句话
-            {"speaker": "user", "content": "什", "delay": 0.8, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "什么", "delay": 0.2, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "什么是", "delay": 0.2, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "什么是大", "delay": 0.2, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "什么是大语", "delay": 0.2, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "什么是大语言", "delay": 0.25, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "什么是大语言模", "delay": 0.2, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "什么是大语言模型", "delay": 0.3, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "什么是大语言模型？", "delay": 0.4, "message_group": "user_msg_2"},
+            # 第二阶段：详细描述问题 - 用户第二句话
+            {"speaker": "user", "content": "我", "delay": 0.8, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在", "delay": 0.2, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在2020年", "delay": 0.2, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在2020年在", "delay": 0.2, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在2020年在六安", "delay": 0.2, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在2020年在六安索伊", "delay": 0.25, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在2020年在六安索伊电器", "delay": 0.2, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在2020年在六安索伊电器制造", "delay": 0.3, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在2020年在六安索伊电器制造有限公司", "delay": 0.4, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在2020年在六安索伊电器制造有限公司买了", "delay": 0.3, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在2020年在六安索伊电器制造有限公司买了一台", "delay": 0.25, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在2020年在六安索伊电器制造有限公司买了一台双开门", "delay": 0.3, "message_group": "user_msg_2"},
+            {"speaker": "user", "content": "我在2020年在六安索伊电器制造有限公司买了一台双开门冰箱", "delay": 0.4, "message_group": "user_msg_2"},
             
-            # AI第二次回复
-            {"speaker": "assistant", "content": "大", "delay": 0.5, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语", "delay": 0.15, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语言", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语言模", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语言模型", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语言模型是", "delay": 0.25, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语言模型是一种", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语言模型是一种基于", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语言模型是一种基于深度", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语言模型是一种基于深度学习", "delay": 0.25, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语言模型是一种基于深度学习的", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语言模型是一种基于深度学习的AI", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "大语言模型是一种基于深度学习的AI系统", "delay": 0.4, "message_group": "assistant_msg_2"},
+            # 客服第二次回复
+            {"speaker": "assistant", "content": "好", "delay": 0.5, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的", "delay": 0.15, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的，我", "delay": 0.2, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的，我记录", "delay": 0.2, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的，我记录一下", "delay": 0.2, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的，我记录一下您的", "delay": 0.25, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的，我记录一下您的情况", "delay": 0.2, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问", "delay": 0.2, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问冰箱", "delay": 0.2, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问冰箱现在", "delay": 0.25, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问冰箱现在出现", "delay": 0.2, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问冰箱现在出现什么", "delay": 0.2, "message_group": "assistant_msg_2"},
+            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问冰箱现在出现什么问题", "delay": 0.4, "message_group": "assistant_msg_2"},
             
-            # 第三阶段：技术细节 - 用户第三句话
-            {"speaker": "user", "content": "它", "delay": 0.7, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "它们", "delay": 0.2, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "它们是", "delay": 0.2, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "它们是怎", "delay": 0.2, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "它们是怎么", "delay": 0.2, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "它们是怎么训", "delay": 0.25, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "它们是怎么训练", "delay": 0.2, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "它们是怎么训练的", "delay": 0.3, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "它们是怎么训练的？", "delay": 0.4, "message_group": "user_msg_3"},
+            # 第三阶段：具体问题描述 - 用户第三句话
+            {"speaker": "user", "content": "冰", "delay": 0.7, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱", "delay": 0.2, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱现在", "delay": 0.2, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱现在完全", "delay": 0.2, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱现在完全不", "delay": 0.2, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱现在完全不制冷", "delay": 0.25, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱现在完全不制冷了", "delay": 0.2, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了", "delay": 0.3, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了2850元", "delay": 0.4, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了2850元买的", "delay": 0.3, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了2850元买的，说是", "delay": 0.25, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了2850元买的，说是保修", "delay": 0.3, "message_group": "user_msg_3"},
+            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了2850元买的，说是保修6年", "delay": 0.4, "message_group": "user_msg_3"},
             
-            # AI第三次回复
-            {"speaker": "assistant", "content": "训", "delay": 0.6, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过", "delay": 0.15, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括", "delay": 0.25, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括数", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括数据", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括数据预", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括数据预处理", "delay": 0.25, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括数据预处理、模", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括数据预处理、模型", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括数据预处理、模型架", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括数据预处理、模型架构", "delay": 0.25, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括数据预处理、模型架构设计", "delay": 0.3, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括数据预处理、模型架构设计和", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "训练过程主要包括数据预处理、模型架构设计和优化", "delay": 0.4, "message_group": "assistant_msg_3"},
+            # 客服第三次回复
+            {"speaker": "assistant", "content": "明", "delay": 0.6, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白", "delay": 0.2, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白了", "delay": 0.15, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白了，那", "delay": 0.2, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白了，那现在", "delay": 0.2, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白了，那现在还在", "delay": 0.2, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白了，那现在还在保修期", "delay": 0.2, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白了，那现在还在保修期内", "delay": 0.25, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白了，那现在还在保修期内。您有", "delay": 0.2, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白了，那现在还在保修期内。您有联系", "delay": 0.2, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白了，那现在还在保修期内。您有联系过", "delay": 0.2, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白了，那现在还在保修期内。您有联系过商家", "delay": 0.25, "message_group": "assistant_msg_3"},
+            {"speaker": "assistant", "content": "明白了，那现在还在保修期内。您有联系过商家维修吗", "delay": 0.4, "message_group": "assistant_msg_3"},
             
-            # 第四阶段：应用场景 - 用户第四句话
-            {"speaker": "user", "content": "有", "delay": 0.8, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "有什", "delay": 0.2, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "有什么", "delay": 0.2, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "有什么实", "delay": 0.2, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "有什么实际", "delay": 0.25, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "有什么实际应", "delay": 0.2, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "有什么实际应用", "delay": 0.3, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "有什么实际应用场", "delay": 0.2, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "有什么实际应用场景", "delay": 0.3, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "有什么实际应用场景？", "delay": 0.4, "message_group": "user_msg_4"},
+            # 第四阶段：投诉重点 - 用户第四句话
+            {"speaker": "user", "content": "联", "delay": 0.8, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系", "delay": 0.2, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过", "delay": 0.2, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过了", "delay": 0.2, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过了，但是", "delay": 0.25, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过了，但是他们", "delay": 0.2, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过了，但是他们一直", "delay": 0.3, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过了，但是他们一直拖延", "delay": 0.2, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来", "delay": 0.3, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来维修", "delay": 0.4, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来维修，而且", "delay": 0.3, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来维修，而且态度", "delay": 0.25, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来维修，而且态度特别", "delay": 0.3, "message_group": "user_msg_4"},
+            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来维修，而且态度特别恶劣", "delay": 0.4, "message_group": "user_msg_4"},
             
-            # AI第四次回复
-            {"speaker": "assistant", "content": "应", "delay": 0.5, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用", "delay": 0.15, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广", "delay": 0.25, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括", "delay": 0.25, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机器", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机器人", "delay": 0.25, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机器人、文", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机器人、文本", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机器人、文本生", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机器人、文本生成", "delay": 0.25, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机器人、文本生成、代", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机器人、文本生成、代码", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机器人、文本生成、代码编", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机器人、文本生成、代码编写", "delay": 0.3, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "应用场景非常广泛，包括聊天机器人、文本生成、代码编写等", "delay": 0.4, "message_group": "assistant_msg_4"},
+            # 客服第四次回复
+            {"speaker": "assistant", "content": "这", "delay": 0.5, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种", "delay": 0.15, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况", "delay": 0.2, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实", "delay": 0.2, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不", "delay": 0.2, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该", "delay": 0.2, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生", "delay": 0.25, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我", "delay": 0.2, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会", "delay": 0.2, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即", "delay": 0.25, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系", "delay": 0.2, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关", "delay": 0.2, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门", "delay": 0.2, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查", "delay": 0.25, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查此事", "delay": 0.3, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查此事，督促", "delay": 0.2, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查此事，督促商家", "delay": 0.2, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查此事，督促商家尽快", "delay": 0.25, "message_group": "assistant_msg_4"},
+            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查此事，督促商家尽快维修", "delay": 0.4, "message_group": "assistant_msg_4"},
         ]
         
         # 快速推送所有消息段
@@ -408,57 +436,45 @@ async def simulate_conversation(websocket: WebSocket, chat_id: str):
                 "is_partial": True  # 大部分消息都是部分消息
             }))
             
-            print(f"实时推送: {segment['speaker']} - {segment['content']}")
+            print(f"客服实时推送: {segment['speaker']} - {segment['content']}")
         
         # 继续循环推送更多实时内容
         await asyncio.sleep(1)
         
-        # 第二轮：技术深度讨论
-        technical_segments = [
-            {"speaker": "user", "content": "机", "delay": 0.8, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习", "delay": 0.25, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习和", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习和深", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习和深度", "delay": 0.25, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习和深度学", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习和深度学习", "delay": 0.3, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习和深度学习有", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习和深度学习有什", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习和深度学习有什么", "delay": 0.25, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习和深度学习有什么区", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习和深度学习有什么区别", "delay": 0.3, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "机器学习和深度学习有什么区别？", "delay": 0.4, "message_group": "user_msg_5"},
+        # 第二轮：详细信息确认
+        followup_segments = [
+            {"speaker": "user", "content": "那", "delay": 0.8, "message_group": "user_msg_5"},
+            {"speaker": "user", "content": "那公司", "delay": 0.2, "message_group": "user_msg_5"},
+            {"speaker": "user", "content": "那公司地址", "delay": 0.2, "message_group": "user_msg_5"},
+            {"speaker": "user", "content": "那公司地址是", "delay": 0.25, "message_group": "user_msg_5"},
+            {"speaker": "user", "content": "那公司地址是在", "delay": 0.2, "message_group": "user_msg_5"},
+            {"speaker": "user", "content": "那公司地址是在六安市", "delay": 0.2, "message_group": "user_msg_5"},
+            {"speaker": "user", "content": "那公司地址是在六安市经济", "delay": 0.25, "message_group": "user_msg_5"},
+            {"speaker": "user", "content": "那公司地址是在六安市经济技术", "delay": 0.2, "message_group": "user_msg_5"},
+            {"speaker": "user", "content": "那公司地址是在六安市经济技术开发区", "delay": 0.3, "message_group": "user_msg_5"},
+            {"speaker": "user", "content": "那公司地址是在六安市经济技术开发区皋城路", "delay": 0.2, "message_group": "user_msg_5"},
+            {"speaker": "user", "content": "那公司地址是在六安市经济技术开发区皋城路364号", "delay": 0.3, "message_group": "user_msg_5"},
             
-            {"speaker": "assistant", "content": "深", "delay": 0.6, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度", "delay": 0.15, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习", "delay": 0.25, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子", "delay": 0.25, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子集", "delay": 0.3, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子集，主", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子集，主要", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子集，主要使", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子集，主要使用", "delay": 0.25, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子集，主要使用多", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子集，主要使用多层", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子集，主要使用多层神", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子集，主要使用多层神经", "delay": 0.25, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子集，主要使用多层神经网", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "深度学习是机器学习的一个子集，主要使用多层神经网络", "delay": 0.4, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好", "delay": 0.6, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的", "delay": 0.15, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我", "delay": 0.2, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经", "delay": 0.2, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录", "delay": 0.2, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录了", "delay": 0.2, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录了详细", "delay": 0.25, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录了详细地址", "delay": 0.3, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们", "delay": 0.2, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在", "delay": 0.2, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时", "delay": 0.2, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时内", "delay": 0.25, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时内给您", "delay": 0.2, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时内给您回复", "delay": 0.3, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时内给您回复处理", "delay": 0.2, "message_group": "assistant_msg_5"},
+            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时内给您回复处理结果", "delay": 0.4, "message_group": "assistant_msg_5"},
         ]
         
-        # 快速推送技术讨论
-        for segment in technical_segments:
+        # 快速推送后续对话
+        for segment in followup_segments:
             await asyncio.sleep(segment["delay"])
             
             message_id = segment["message_group"]
@@ -472,36 +488,181 @@ async def simulate_conversation(websocket: WebSocket, chat_id: str):
                 "is_partial": True
             }))
             
-            print(f"技术讨论: {segment['speaker']} - {segment['content']}")
+            print(f"详细确认: {segment['speaker']} - {segment['content']}")
         
         # 发送对话结束标记
         await asyncio.sleep(1)
         await websocket.send_text(json.dumps({
             "type": "conversation_complete",
             "chat_id": chat_id,
-            "message": "实时语音识别演示完成",
+            "message": "客服投诉处理演示完成",
             "timestamp": datetime.now().isoformat()
         }))
         
     except Exception as e:
         print(f"模拟对话错误: {e}")
 
-@app.get("/health")
-async def health_check():
-    """健康检查端点"""
-    return {
-        "status": "healthy",
-        "active_connections": len(active_connections),
-        "total_chats": len(chat_sessions),
-        "timestamp": datetime.now().isoformat()
-    }
+# ASR WebSocket端点 - 只使用真实FunASR
+@app.websocket("/ws")
+async def asr_websocket_endpoint(websocket: WebSocket):
+    """ASR WebSocket端点 - 实时语音识别"""
+    await websocket.accept()
+    log.info("ASR WebSocket连接已建立")
+    
+    # 初始化ASR状态
+    cache: dict = {}
+    buf = bytearray()
+    
+    try:
+        while True:
+            # 接收音频字节数据
+            chunk = await websocket.receive_bytes()
+            buf.extend(chunk)
+            
+            # 处理完整音频帧
+            while len(buf) >= BYTES_PER_FRAME:
+                frame = bytes(buf[:BYTES_PER_FRAME])
+                del buf[:BYTES_PER_FRAME]
+                
+                # 转换为浮点音频数据
+                audio = (np.frombuffer(frame, dtype=np.int16)
+                           .astype(np.float32) / 32768.0)
+                
+                # 使用FunASR进行识别
+                result = asr_model.generate(
+                    input=audio,
+                    cache=cache,
+                    is_final=False,
+                    chunk_size=CHUNK_SIZE,
+                    encoder_chunk_look_back=ENC_LB,
+                    decoder_chunk_look_back=DEC_LB,
+                )
+                
+                # 提取识别文本
+                text = _extract_asr_text(result)
+                if text:
+                    await websocket.send_text(text)
+                    log.info(f"ASR识别: {text}")
+                    
+    except WebSocketDisconnect:
+        log.info("ASR客户端断开连接 - 处理最终音频")
+        # 处理剩余的音频缓冲区
+        if buf:
+            audio = (np.frombuffer(buf, dtype=np.int16)
+                       .astype(np.float32) / 32768.0)
+            result = asr_model.generate(
+                input=audio,
+                cache=cache,
+                is_final=True,
+                chunk_size=CHUNK_SIZE,
+                encoder_chunk_look_back=ENC_LB,
+                decoder_chunk_look_back=DEC_LB,
+            )
+            text = _extract_asr_text(result)
+            if text:
+                await websocket.send_text(text)
+                log.info(f"ASR最终识别: {text}")
+    except Exception as e:
+        log.error(f"ASR WebSocket错误: {e}")
+        await websocket.close(code=1011, reason="ASR processing error")
+    finally:
+        log.info("ASR WebSocket连接已关闭")
+
+def _extract_asr_text(result):
+    """从FunASR结果中提取文本 - 模仿asr folder的实现"""
+    if not result:
+        return None
+    if isinstance(result, list) and result:
+        item = result[0]
+        if isinstance(item, dict):
+            for key in ("text", "transcript", "result", "sentence"):
+                if key in item and item[key]:
+                    return item[key]
+        elif isinstance(item, str):
+            return item
+    elif isinstance(result, str):
+        return result
+    return None
+
+# 初始化示例数据函数
+def init_sample_data():
+    """初始化示例数据"""
+    user_id = "user_001"
+    
+    # 创建几个示例聊天记录
+    for i in range(3):
+        chat_id = f"chat_{i+1:03d}"
+        session = ChatSession(
+            id=chat_id,
+            user_id=user_id,
+            title=f"Call Session {i+1}",
+            status="ended",
+            created_at=datetime.now(),
+            ended_at=datetime.now(),
+            messages=[
+                ChatMessage(
+                    id=f"msg_{chat_id}_001",
+                    chat_id=chat_id,
+                    speaker="user",
+                    content=f"你好，这是第{i+1}次通话的用户消息。",
+                    timestamp=datetime.now()
+                ),
+                ChatMessage(
+                    id=f"msg_{chat_id}_002",
+                    chat_id=chat_id,
+                    speaker="assistant",
+                    content=f"您好！这是第{i+1}次通话的AI回复。很高兴为您服务。",
+                    timestamp=datetime.now()
+                )
+            ]
+        )
+        chat_sessions[chat_id] = session
+        
+        # 添加到用户聊天历史
+        if user_id not in user_chat_history:
+            user_chat_history[user_id] = []
+        user_chat_history[user_id].append(chat_id)
+    
+    # 创建一个活跃的聊天会话
+    active_chat_id = "chat_active_001"
+    active_session = ChatSession(
+        id=active_chat_id,
+        user_id=user_id,
+        title="Active Call Session",
+        status="active",
+        created_at=datetime.now(),
+        messages=[
+            ChatMessage(
+                id=f"msg_{active_chat_id}_001",
+                chat_id=active_chat_id,
+                speaker="user",
+                content="这是一个正在进行的通话...",
+                timestamp=datetime.now()
+            )
+        ]
+    )
+    chat_sessions[active_chat_id] = active_session
+    user_chat_history[user_id].append(active_chat_id)
 
 if __name__ == "__main__":
-    print("启动Voice Chat Backend服务器...")
-    print("API文档地址: http://localhost:8000/docs")
-    print("健康检查: http://localhost:8000/health")
-    print("示例API: http://localhost:8000/chat/list?id=user_001")
-    print("WebSocket: ws://localhost:8000/chatting?id=chat_active_001")
+    # 启动时初始化示例数据
+    init_sample_data()
+    
+    log.info("========================================")
+    log.info("Voice Chat Backend with ASR - v2.0.0")
+    log.info("========================================")
+    log.info("ASR模型状态: 已加载并可用")
+    log.info(f"ASR模型: {MODEL_NAME} (rev: {MODEL_REV})")
+    log.info(f"设备: {DEVICE}")
+    log.info("服务端点:")
+    log.info("  - API文档: http://localhost:8000/docs")
+    log.info("  - 健康检查: http://localhost:8000/health")
+    log.info("  - ASR信息: http://localhost:8000/asr/info")
+    log.info("  - 聊天API示例: http://localhost:8000/chat/list?id=user_001")
+    log.info("WebSocket端点:")
+    log.info("  - 聊天: ws://localhost:8000/chatting?id=chat_active_001")
+    log.info("  - ASR: ws://localhost:8000/ws")
+    log.info("========================================")
     
     uvicorn.run(
         "main:app",
