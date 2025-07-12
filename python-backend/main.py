@@ -10,6 +10,11 @@ from datetime import datetime
 import uuid
 import numpy as np
 import logging
+import zmq
+from binascii import unhexlify
+import scipy.signal
+import io
+import wave
 
 # ASR相关配置
 MODEL_NAME: str = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
@@ -738,102 +743,218 @@ def _extract_asr_text(result):
     log.debug("未能从ASR结果中提取文本")
     return None
 
+def _decode_audio_data(hex_data):
+    """从hex字符串解码WAV文件数据并提取音频采样"""
+    try:
+        # 将hex字符串转换为字节（这是完整的WAV文件数据）
+        wav_bytes = unhexlify(hex_data)
+        
+        # 使用BytesIO创建内存文件对象
+        wav_io = io.BytesIO(wav_bytes)
+        
+        # 打开WAV文件
+        with wave.open(wav_io, 'rb') as wav_file:
+            # 获取WAV文件参数
+            sample_rate = wav_file.getframerate()
+            n_channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            n_frames = wav_file.getnframes()
+            
+            log.debug(f"WAV参数: 采样率={sample_rate}Hz, 声道={n_channels}, 位深={sample_width*8}bit, 帧数={n_frames}")
+            
+            # 读取音频数据
+            audio_bytes = wav_file.readframes(n_frames)
+            
+            # 转换为numpy数组
+            if sample_width == 1:
+                audio_data = np.frombuffer(audio_bytes, dtype=np.uint8)
+                audio_data = (audio_data.astype(np.float32) - 128) / 128.0
+            elif sample_width == 2:
+                audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
+                audio_data = audio_data.astype(np.float32) / 32768.0
+            else:
+                raise ValueError(f"不支持的位深: {sample_width*8}bit")
+            
+            # 如果是立体声，取平均值转为单声道
+            if n_channels == 2:
+                audio_data = audio_data.reshape(-1, 2).mean(axis=1)
+            elif n_channels > 2:
+                raise ValueError(f"不支持的声道数: {n_channels}")
+            
+            return audio_data, sample_rate
+            
+    except Exception as e:
+        log.error(f"解码WAV数据失败: {e}")
+        return None, None
+
+def _resample_audio(audio_data, orig_sr, target_sr):
+    """音频重采样"""
+    if orig_sr == target_sr:
+        return audio_data
+    
+    try:
+        # 使用scipy进行重采样
+        resampled = scipy.signal.resample_poly(audio_data, target_sr, orig_sr)
+        log.debug(f"音频重采样: {orig_sr}Hz -> {target_sr}Hz, 长度: {len(audio_data)} -> {len(resampled)}")
+        return resampled.astype(np.float32)
+    except Exception as e:
+        log.error(f"音频重采样失败: {e}")
+        return None
+
+async def _process_zmq_voice_data(websocket):
+    """处理ZMQ语音数据的异步函数"""
+    # 初始化ZMQ订阅者
+    context = zmq.Context()
+    socket = context.socket(zmq.SUB)
+    socket.connect("tcp://localhost:5555")
+    socket.setsockopt_string(zmq.SUBSCRIBE, "")  # 订阅所有消息
+    socket.RCVTIMEO = 100  # 100ms超时
+    
+    # 初始化ASR状态
+    cache: dict = {}
+    accumulated_text = ""
+    
+    log.info("ZMQ语音数据处理器已启动，监听端口5555")
+    
+    try:
+        while True:
+            try:
+                # 接收ZMQ消息
+                message = socket.recv_json(zmq.NOBLOCK)
+                
+                if message["type"] == "voice_segment":
+                    log.debug(f"收到语音段: 呼叫ID={message['call_id']}, 序列={message['sequence']}, 数据大小={len(message['data'])//2}字节")
+                    
+                    # 解码WAV文件数据并提取音频采样
+                    audio_data, orig_sr = _decode_audio_data(message['data'])
+                    if audio_data is None:
+                        continue
+                    
+                    # 升采样到16kHz (FunASR要求)
+                    target_sr = 16000
+                    if orig_sr != target_sr:
+                        audio_data = _resample_audio(audio_data, orig_sr, target_sr)
+                        if audio_data is None:
+                            continue
+                    
+                    # 使用ASR识别
+                    try:
+                        result = inference_pipeline(
+                            audio_data,
+                            cache=cache,
+                            is_final=False,
+                            encoder_chunk_look_back=ENC_LB,
+                            decoder_chunk_look_back=DEC_LB
+                        )
+                        
+                        # 提取识别文本
+                        text = _extract_asr_text(result)
+                        if text and text != accumulated_text:
+                            accumulated_text = text
+                            # 直接发送识别结果到前端
+                            await websocket.send_text(accumulated_text)
+                            log.info(f"ASR识别结果: '{text}'")
+                    
+                    except Exception as e:
+                        log.error(f"ASR识别失败: {e}")
+                
+                elif message["type"] == "call_end":
+                    log.info(f"通话结束: 呼叫ID={message['call_id']}")
+                    # 发送最终结果
+                    if accumulated_text:
+                        try:
+                            # 最终识别
+                            result = inference_pipeline(
+                                np.array([]),  # 空数组表示结束
+                                cache=cache,
+                                is_final=True,
+                                encoder_chunk_look_back=ENC_LB,
+                                decoder_chunk_look_back=DEC_LB
+                            )
+                            final_text = _extract_asr_text(result)
+                            if final_text:
+                                await websocket.send_text(final_text)
+                            else:
+                                await websocket.send_text(accumulated_text)
+                        except Exception as e:
+                            log.error(f"最终ASR识别失败: {e}")
+                            await websocket.send_text(accumulated_text)
+                    else:
+                        await websocket.send_text("通话结束")
+                    
+                    # 重置状态
+                    cache.clear()
+                    accumulated_text = ""
+            
+            except zmq.error.Again:
+                # 超时，没有新消息
+                await asyncio.sleep(0.01)  # 释放控制权
+                continue
+            except zmq.error.ZMQError as e:
+                log.error(f"ZMQ错误: {e}")
+                await asyncio.sleep(0.1)
+                continue
+                
+    except Exception as e:
+        log.error(f"ZMQ语音数据处理异常: {e}")
+    finally:
+        socket.close()
+        context.term()
+        log.info("ZMQ语音数据处理器已关闭")
+
 @app.websocket("/listening")
 async def websocket_listening_endpoint(websocket: WebSocket):
-    """本机通话监听WebSocket端点 - 模拟实时语音识别流"""
+    """本机通话监听WebSocket端点 - 真实ZMQ数据源 + ASR识别"""
     await websocket.accept()
     log.info("本机监听客户端已连接")
     
     try:
         # 发送连接确认
-        await websocket.send_text("监听服务已连接，开始监听本机通话...")
-        await asyncio.sleep(1)
+        await websocket.send_text("监听服务已连接，正在等待通话数据...")
         
-        # 模拟实时语音识别流式输出
-        conversation_flow = [
-            # 开始监听状态
-            {"text": "正在监听本机通话", "delay": 0.1},
-            {"text": "正在监听本机通话...", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到", "delay": 0.3},
-            {"text": "正在监听本机通话... 检测到语音", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动", "delay": 0.5},
-            
-            # 用户开始说话
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户:", "delay": 1.0},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你", "delay": 0.15},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，", "delay": 0.15},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息", "delay": 0.8},
-            
-            # 客服开始回应
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服:", "delay": 1.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您", "delay": 0.15},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！", "delay": 0.15},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？", "delay": 1.0},
-            
-            # 用户第二次说话
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户:", "delay": 1.5},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务", "delay": 1.0},
-            
-            # 客服第二次回应
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服:", "delay": 1.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的语音", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的语音识别", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的语音识别服务", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的语音识别服务支持", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的语音识别服务支持实时", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的语音识别服务支持实时转录", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的语音识别服务支持实时转录，准确率", "delay": 0.25},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的语音识别服务支持实时转录，准确率高达", "delay": 0.2},
-            {"text": "正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的语音识别服务支持实时转录，准确率高达95%", "delay": 2.0},
-        ]
+        # 启动ZMQ语音数据处理任务
+        zmq_task = asyncio.create_task(_process_zmq_voice_data(websocket))
         
-        # 模拟流式输出
-        for segment in conversation_flow:
-            await asyncio.sleep(segment["delay"])
-            try:
-                await websocket.send_text(segment["text"])
-                log.debug(f"发送监听流: {len(segment['text'])} 字符")
-            except WebSocketDisconnect:
-                log.info("监听客户端断开连接")
-                break
-        
-        # 发送结束状态
-        await asyncio.sleep(1)
-        await websocket.send_text("正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的语音识别服务支持实时转录，准确率高达95%\n\n[通话进行中...]")
-        
-        # 循环发送待机状态
+        # 监听客户端消息
         while True:
-            await asyncio.sleep(5)
-            await websocket.send_text("正在监听本机通话... 检测到语音活动\n\n用户: 你好，我想咨询一下产品信息\n\n客服: 您好！很高兴为您服务，请问您需要了解哪款产品？\n\n用户: 我想了解你们的语音识别服务\n\n客服: 我们的语音识别服务支持实时转录，准确率高达95%\n\n[监听服务运行中...]")
-            
+            try:
+                # 设置短超时，避免阻塞ZMQ处理
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                message_data = json.loads(data)
+                
+                if message_data.get("type") == "ping":
+                    # 响应心跳
+                    await websocket.send_text(json.dumps({
+                        "type": "pong",
+                        "timestamp": datetime.now().isoformat()
+                    }))
+                elif message_data.get("type") == "stop_listening":
+                    # 停止监听
+                    zmq_task.cancel()
+                    await websocket.send_text("监听服务已停止")
+                    break
+                    
+            except asyncio.TimeoutError:
+                # 超时是正常的，继续循环
+                continue
+            except json.JSONDecodeError:
+                # 如果不是JSON消息，忽略
+                continue
+                
     except WebSocketDisconnect:
         log.info("监听客户端断开连接")
     except Exception as e:
         log.error(f"监听WebSocket错误: {e}")
         await websocket.close(code=1011, reason="Listening service error")
+    finally:
+        # 确保ZMQ任务被取消
+        if 'zmq_task' in locals() and not zmq_task.done():
+            zmq_task.cancel()
+            try:
+                await zmq_task
+            except asyncio.CancelledError:
+                pass
+        log.info("监听服务已关闭")
 
 if __name__ == "__main__":
     log.info("========================================")
@@ -853,7 +974,7 @@ if __name__ == "__main__":
     log.info("WebSocket端点:")
     log.info("  - 聊天: ws://localhost:8000/chatting?id=chat_active_001")
     log.info("  - ASR: ws://localhost:8000/ws")
-    log.info("  - 本机监听: ws://localhost:8000/listening")
+    log.info("  - 本机监听 (ZMQ+ASR): ws://localhost:8000/listening")
     log.info("========================================")
     
     uvicorn.run(
