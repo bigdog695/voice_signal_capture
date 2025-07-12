@@ -21,10 +21,21 @@ import io
 @dataclass
 class CallInfo:
     call_id: str
-    client_ip: str
+    from_ip: str
     start_time: float
     last_packet_time: float
     is_active: bool = True
+    from_extension: str | None = None
+    to_extension: str | None = None
+    call_direction: str | None = None  # 'outgoing' or 'incoming'
+    related_call_id: str | None = None  # Link to the other leg of the call
+
+    def __str__(self) -> str:
+        base_str = (f"Call {self.call_id} ({self.call_direction}): "
+                   f"From ext {self.from_extension} ({self.from_ip}) to ext {self.to_extension}")
+        if self.related_call_id:
+            base_str += f" [Related Call: {self.related_call_id}]"
+        return base_str
 
 class RTPHeader:
     def __init__(self, data: bytes):
@@ -61,6 +72,10 @@ class VoiceSegment:
         self.non_silence_packets = 0
         self.discontinuities = 0
         self.max_seq_gap = 0
+        print(f"\nCreated new voice segment:")
+        print(f"  Call ID: {call_id}")
+        print(f"  Sequence: {sequence}")
+        print(f"  Client IP: {client_ip}")
 
     def add_packet(self, payload: bytes, seq: int):
         # Store packet in buffer
@@ -110,48 +125,35 @@ class VoiceSegment:
         self.last_seq = seq
 
     def get_duration(self) -> float:
+        """Calculate duration based on samples received"""
         return self.samples_received / 8000.0  # 8kHz sampling rate for G.711
 
     def to_wav_bytes(self) -> bytes:
         """Convert the buffer to WAV format and return as bytes"""
-        # Convert μ-law to 16-bit linear PCM using audioop
-        pcm_data = audioop.ulaw2lin(bytes(self.buffer), 2)
+        print(f"\nConverting segment to WAV:")
+        print(f"  Buffer size: {len(self.buffer)} bytes")
+        print(f"  Samples: {self.samples_received}")
         
-        # Create WAV in memory
-        wav_buffer = io.BytesIO()
-        with wave.open(wav_buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)  # mono
-            wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(8000)  # 8kHz
-            wav_file.writeframes(pcm_data)
-        
-        # Get the complete WAV file as bytes
-        wav_data = wav_buffer.getvalue()
-        
-        # Print some debug info about the audio
-        total_packets = self.silence_packets + self.non_silence_packets
-        if total_packets > 0:
-            silence_percent = (self.silence_packets / total_packets) * 100
-            print(f"\nAudio analysis for segment {self.sequence}:")
-            print(f"  Total packets: {total_packets}")
-            print(f"  Silence packets: {self.silence_packets} ({silence_percent:.1f}%)")
-            print(f"  Non-silence packets: {self.non_silence_packets} ({100-silence_percent:.1f}%)")
-            print(f"  Discontinuities: {self.discontinuities}")
-            print(f"  Max sequence gap: {self.max_seq_gap}")
-            print(f"  Buffer size: {len(self.buffer)} bytes")
-            print(f"  PCM data size: {len(pcm_data)} bytes")
+        try:
+            # Convert μ-law to 16-bit linear PCM using audioop
+            pcm_data = audioop.ulaw2lin(bytes(self.buffer), 2)
             
-            # Show some non-silence samples if present
-            if self.non_silence_packets > 0:
-                non_silence_bytes = [b for b in self.buffer[:100] if b != 0xFF][:5]
-                if non_silence_bytes:
-                    print("  First few non-silence μ-law values:", [hex(b) for b in non_silence_bytes])
-                    # Show corresponding PCM values
-                    for b in non_silence_bytes:
-                        pcm_val = struct.unpack('<h', audioop.ulaw2lin(bytes([b]), 2))[0]
-                        print(f"    μ-law {hex(b)} -> PCM {pcm_val}")
-        
-        return wav_data
+            # Create WAV in memory
+            wav_buffer = io.BytesIO()
+            with wave.open(wav_buffer, 'wb') as wav_file:
+                wav_file.setnchannels(1)  # mono
+                wav_file.setsampwidth(2)  # 16-bit
+                wav_file.setframerate(8000)  # 8kHz
+                wav_file.writeframes(pcm_data)
+            
+            # Get the complete WAV file as bytes
+            wav_data = wav_buffer.getvalue()
+            print(f"  WAV size: {len(wav_data)} bytes")
+            return wav_data
+            
+        except Exception as e:
+            print(f"Error converting to WAV: {e}")
+            return bytes()
 
 class VoiceStreamPublisher:
     def __init__(self, max_memory_mb: int = 2048):  # Default 2GB
@@ -219,16 +221,17 @@ class VoiceStreamPublisher:
         # Add to queue and get size
         size = self._add_to_queue(message)
         
-        # Publish the message
-        self.socket.send_json(message)
-        
-        # Log memory usage periodically
-        if sequence % 10 == 0:  # Every 10th segment
-            with self.message_lock:
-                print(f"\n[MEMORY] Queue status:")
-                print(f"  Messages: {len(self.message_queue)}")
-                print(f"  Memory usage: {self.current_memory/1024/1024:.1f}MB")
-                print(f"  Memory limit: {self.max_memory/1024/1024:.1f}MB")
+        try:
+            # Publish the message
+            print(f"\nPublishing message to ZMQ:")
+            print(f"  Type: voice_segment")
+            print(f"  Call ID: {call_id}")
+            print(f"  Sequence: {sequence}")
+            print(f"  Data size: {len(wav_data)} bytes")
+            self.socket.send_json(message)
+            print("Message sent successfully")
+        except Exception as e:
+            print(f"Error publishing to ZMQ: {e}")
 
     def publish_call_end(self, call_id: str, client_ip: str):
         """Publish call end signal"""
@@ -254,7 +257,7 @@ class VoiceStreamPublisher:
         self.context.term()
 
 class VoiceStreamCapture:
-    def __init__(self, duration_threshold: float = 2.0):
+    def __init__(self, duration_threshold: float = 2.0):  # Changed from 10.0 to 2.0
         self.publisher = VoiceStreamPublisher()
         self.calls: Dict[str, CallInfo] = {}  # call_id -> CallInfo
         self.segments: Dict[str, VoiceSegment] = {}  # call_id -> current segment
@@ -262,6 +265,7 @@ class VoiceStreamCapture:
         self.lock = threading.Lock()
         self.should_stop = False
         self.duration_threshold = duration_threshold
+        self.server_ip = '100.120.241.10'  # Define server IP
         
         # Setup signal handler
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -272,7 +276,7 @@ class VoiceStreamCapture:
         # Send call end signals for all active calls
         for call_id, call_info in self.calls.items():
             if call_info.is_active:
-                self.publisher.publish_call_end(call_id, call_info.client_ip)
+                self.publisher.publish_call_end(call_id, call_info.from_ip)
         self.publisher.close()
         os._exit(0)
 
@@ -315,34 +319,88 @@ class VoiceStreamCapture:
 
     def extract_client_info(self, sip_data: dict, src_ip: str) -> tuple[str, str | None]:
         """Extract client IP and extension from SIP headers"""
-        client_ip: str | None = None
+        client_ip: str = src_ip  # Initialize with src_ip as fallback
         extension: str | None = None
         
-        # Try to get client IP from Contact or Via header
-        if 'Contact' in sip_data['headers']:
-            contact = sip_data['headers']['Contact']
-            ip_match = re.search(r'@([\d\.]+):', contact)
-            if ip_match:
-                client_ip = ip_match.group(1)
-        
-        if not client_ip and 'Via' in sip_data['headers']:
-            via = sip_data['headers']['Via']
-            ip_match = re.search(r'([\d\.]+):', via)
-            if ip_match:
-                client_ip = ip_match.group(1)
-        
-        # Get extension from From header
+        # Get extension from From header first
         if 'From' in sip_data['headers']:
             from_header = sip_data['headers']['From']
             ext_match = re.search(r'sip:(\d+)@', from_header)
             if ext_match:
                 extension = ext_match.group(1)
+                # Map known extensions to their client IPs
+                extension_ip_map = {
+                    '1004': '100.120.241.1',  # Known client IP for extension 1004
+                }
+                if extension in extension_ip_map:
+                    client_ip = extension_ip_map[extension]
+                    print(f"Mapped extension {extension} to known client IP: {client_ip}")
         
-        # Fallback to source IP if we couldn't extract from headers
-        if not client_ip:
-            client_ip = src_ip
+        # If no mapping found, try to get client IP from Contact or Via header
+        if client_ip == src_ip:  # Only try headers if we haven't found a mapping
+            if 'Contact' in sip_data['headers']:
+                contact = sip_data['headers']['Contact']
+                ip_match = re.search(r'@([\d\.]+):', contact)
+                if ip_match:
+                    potential_ip = ip_match.group(1)
+                    # Don't use server IP
+                    if potential_ip != '100.120.241.10':  # Avoid using server IP
+                        client_ip = potential_ip
+            
+            if client_ip == src_ip and 'Via' in sip_data['headers']:
+                via = sip_data['headers']['Via']
+                ip_match = re.search(r'([\d\.]+):', via)
+                if ip_match:
+                    potential_ip = ip_match.group(1)
+                    # Don't use server IP
+                    if potential_ip != '100.120.241.10':  # Avoid using server IP
+                        client_ip = potential_ip
+        
+        # For INVITE requests from known client IPs, use that IP
+        if sip_data['type'] == 'request' and sip_data['method'] == 'INVITE':
+            if src_ip != '100.120.241.10':  # If source is not the server
+                client_ip = src_ip
+        
+        # If we somehow still got the server IP, try to correct it
+        if client_ip == '100.120.241.10' and extension == '1004':
+            client_ip = '100.120.241.1'
+            print(f"Corrected server IP to known client IP for extension {extension}: {client_ip}")
             
         return client_ip, extension
+
+    def extract_call_direction(self, sip_data: dict) -> tuple[str | None, str | None]:
+        """Extract the from and to extensions from SIP headers"""
+        from_ext = to_ext = None
+        
+        if 'From' in sip_data['headers']:
+            from_match = re.search(r'sip:(\d+)@', sip_data['headers']['From'])
+            if from_match:
+                from_ext = from_match.group(1)
+                
+        if 'To' in sip_data['headers']:
+            to_match = re.search(r'sip:(\d+)@', sip_data['headers']['To'])
+            if to_match:
+                to_ext = to_match.group(1)
+                
+        return from_ext, to_ext
+
+    def find_related_call(self, from_ext: str | None, to_ext: str | None, current_time: float, window: float = 2.0) -> str | None:
+        """Find related call ID based on extensions and time window"""
+        if not from_ext or not to_ext:
+            return None
+            
+        for call_id, call_info in self.calls.items():
+            # Skip if this call already has a related call
+            if call_info.related_call_id:
+                continue
+                
+            # Check if extensions match (in either direction) and time is close
+            time_diff = abs(current_time - call_info.start_time)
+            if time_diff <= window:  # Within 2 second window
+                if (call_info.from_extension == to_ext and call_info.to_extension == from_ext) or \
+                   (call_info.from_extension == from_ext and call_info.to_extension == to_ext):
+                    return call_id
+        return None
 
     def process_sip_packet(self, packet, src_ip: str):
         """Process SIP packet to track calls"""
@@ -353,37 +411,143 @@ class VoiceStreamCapture:
             return
             
         call_id = sip_data['call_id']
+        dst_ip = packet[IP].dst
         
         with self.lock:
             # New call
             if sip_data['type'] == 'request' and sip_data['method'] == 'INVITE':
                 if call_id not in self.calls:
-                    client_ip, extension = self.extract_client_info(sip_data, src_ip)
-                    if not client_ip:  # This should never happen due to fallback
-                        client_ip = src_ip
-                        
-                    print(f"New call detected - ID: {call_id}")
-                    print(f"  From extension: {extension or 'unknown'}")
-                    print(f"  Client IP: {client_ip}")
+                    # Get call direction info
+                    from_ext, to_ext = self.extract_call_direction(sip_data)
+                    call_direction = 'outgoing' if src_ip != self.server_ip else 'incoming'
                     
-                    self.calls[call_id] = CallInfo(
-                        call_id=call_id,
-                        client_ip=client_ip,  # Now guaranteed to be str
-                        start_time=time.monotonic(),
-                        last_packet_time=time.monotonic()
-                    )
+                    # Only process and log outgoing calls
+                    if call_direction == 'outgoing':
+                        actual_ip = src_ip
+                        print(f"\nNew outgoing call detected:")
+                        print(f"  Call ID: {call_id}")
+                        print(f"  From extension: {from_ext or 'unknown'}")
+                        print(f"  To extension: {to_ext or 'unknown'}")
+                        print(f"  Client IP: {actual_ip}")
+                        
+                        self.calls[call_id] = CallInfo(
+                            call_id=call_id,
+                            from_ip=actual_ip,
+                            start_time=time.monotonic(),
+                            last_packet_time=time.monotonic(),
+                            from_extension=from_ext,
+                            to_extension=to_ext,
+                            call_direction=call_direction
+                        )
             
             # Call end
             elif sip_data['type'] == 'request' and sip_data['method'] == 'BYE':
                 if call_id in self.calls:
                     call_info = self.calls[call_id]
-                    call_info.is_active = False
-                    # Publish any remaining segment
-                    if call_id in self.segments:
+                    if call_info.call_direction == 'outgoing':  # Only log outgoing calls
+                        call_info.is_active = False
+                        # Publish any remaining segment
+                        if call_id in self.segments:
+                            self.publish_current_segment(call_id)
+                        # Publish call end signal
+                        self.publisher.publish_call_end(call_id, call_info.from_ip)
+                        print(f"\nOutgoing call ended: {call_info}")
+
+    def packet_callback(self, packet):
+        """Process each captured packet"""
+        if self.should_stop:
+            return True
+            
+        if UDP not in packet or IP not in packet:
+            return
+            
+        src_ip = packet[IP].src
+        dst_ip = packet[IP].dst
+        src_port = packet[UDP].sport
+        dst_port = packet[UDP].dport
+        payload = bytes(packet[UDP].payload)
+        
+        # Handle SIP packets
+        if packet[UDP].dport == 5060 or packet[UDP].sport == 5060:
+            self.process_sip_packet(packet, src_ip)
+            return
+            
+        # Handle RTP packets
+        if self.is_rtp_packet(payload):
+            rtp = RTPHeader(payload)
+            rtp_payload = payload[12:]  # Skip RTP header
+            
+            # Skip if payload is too small
+            if len(rtp_payload) < 160:
+                return
+                
+            # Find corresponding call by matching source IP and checking if active and outgoing
+            matching_calls = []
+            for cid, call_info in self.calls.items():
+                if src_ip == call_info.from_ip and call_info.is_active and call_info.call_direction == 'outgoing':
+                    matching_calls.append((cid, call_info))
+            
+            if not matching_calls:
+                return
+                
+            # If we found exactly one matching call, process the packet
+            if len(matching_calls) == 1:
+                call_id, call_info = matching_calls[0]
+                call_info.last_packet_time = time.monotonic()
+                
+                # Check if payload has enough non-silence
+                non_silence_count = sum(1 for b in rtp_payload if b != 0xFF)
+                if non_silence_count >= len(rtp_payload) * 0.1:  # At least 10% non-silence
+                    with self.lock:
+                        # Create new segment if needed
+                        if call_id not in self.segments:
+                            print(f"\nStarting new voice segment for outgoing call {call_id}")
+                            self.segments[call_id] = VoiceSegment(
+                                call_id=call_id,
+                                client_ip=call_info.from_ip,
+                                sequence=self.segment_counters[call_id]
+                            )
+                        
+                        # Add packet to segment
+                        segment = self.segments[call_id]
+                        segment.buffer.extend(rtp_payload)  # Directly extend buffer with payload
+                        segment.samples_received += len(rtp_payload)
+                        
+                        # Check if segment should be published
                         self.publish_current_segment(call_id)
-                    # Publish call end signal
-                    self.publisher.publish_call_end(call_id, call_info.client_ip)
-                    print(f"Call ended - ID: {call_id}")
+            elif len(matching_calls) > 1:
+                print(f"\nWarning: Multiple matching outgoing calls for IP {src_ip}")
+                for cid, call_info in matching_calls:
+                    print(f"  Call {cid}: {call_info}")
+
+    def publish_current_segment(self, call_id: str):
+        """Convert and publish current segment if duration threshold reached"""
+        segment = self.segments.get(call_id)
+        if not segment:
+            return
+            
+        duration = segment.get_duration()
+        if duration >= self.duration_threshold:  # Use configurable threshold
+            print(f"\nPublishing voice segment:")
+            print(f"  Call ID: {call_id}")
+            print(f"  Duration: {duration:.2f}s")
+            print(f"  Sequence: {self.segment_counters[call_id]}")
+            
+            wav_data = segment.to_wav_bytes()
+            sequence = self.segment_counters[call_id]
+            self.publisher.publish_segment(
+                call_id=segment.call_id,
+                client_ip=segment.client_ip,
+                wav_data=wav_data,
+                sequence=sequence
+            )
+            self.segment_counters[call_id] += 1
+            # Start new segment
+            self.segments[call_id] = VoiceSegment(
+                call_id=call_id,
+                client_ip=segment.client_ip,
+                sequence=self.segment_counters[call_id]
+            )
 
     def is_rtp_packet(self, data: bytes) -> bool:
         """Validate if packet is RTP with voice data"""
@@ -409,118 +573,7 @@ class VoiceStreamCapture:
             return True
             
         except Exception as e:
-            print(f"Error parsing RTP: {e}")
             return False
-
-    def publish_current_segment(self, call_id: str):
-        """Convert and publish current segment if duration threshold reached"""
-        segment = self.segments.get(call_id)
-        if not segment:
-            return
-            
-        duration = segment.get_duration()
-        if duration >= self.duration_threshold:  # Use configurable threshold
-            wav_data = segment.to_wav_bytes()
-            sequence = self.segment_counters[call_id]
-            self.publisher.publish_segment(
-                call_id=segment.call_id,
-                client_ip=segment.client_ip,
-                wav_data=wav_data,
-                sequence=sequence
-            )
-            self.segment_counters[call_id] += 1
-            # Start new segment
-            self.segments[call_id] = VoiceSegment(
-                call_id=call_id,
-                client_ip=segment.client_ip,
-                sequence=self.segment_counters[call_id]
-            )
-
-    def packet_callback(self, packet):
-        """Process each captured packet"""
-        if self.should_stop:
-            return True
-            
-        if UDP not in packet or IP not in packet:
-            return
-            
-        src_ip = packet[IP].src
-        dst_ip = packet[IP].dst
-        src_port = packet[UDP].sport
-        dst_port = packet[UDP].dport
-        payload = bytes(packet[UDP].payload)
-        
-        # Handle SIP packets
-        if packet[UDP].dport == 5060 or packet[UDP].sport == 5060:
-            self.process_sip_packet(packet, src_ip)
-            return
-            
-        # Handle RTP packets
-        if self.is_rtp_packet(payload):
-            rtp = RTPHeader(payload)
-            
-            # Find corresponding call
-            call_id = None
-            client_ip = None
-            for cid, call_info in self.calls.items():
-                # We only want packets FROM the client (outgoing voice)
-                if src_ip == call_info.client_ip and call_info.is_active:
-                    call_id = cid
-                    client_ip = call_info.client_ip
-                    call_info.last_packet_time = time.monotonic()
-                    break
-            
-            if not call_id or not client_ip:
-                return
-                
-            # Analyze RTP payload
-            rtp_payload = payload[12:]  # Skip RTP header
-            
-            # Skip if payload is too small or all silence
-            if len(rtp_payload) < 160 or all(b == 0xFF for b in rtp_payload):
-                return
-            
-            # Check if payload has enough non-silence
-            non_silence_count = sum(1 for b in rtp_payload if b != 0xFF)
-            if non_silence_count < len(rtp_payload) * 0.1:  # At least 10% non-silence
-                return
-                
-            with self.lock:
-                # Create new segment if needed
-                if call_id not in self.segments:
-                    print(f"\nStarting new voice segment for call {call_id}")
-                    self.segments[call_id] = VoiceSegment(
-                        call_id=call_id,
-                        client_ip=client_ip,
-                        sequence=self.segment_counters[call_id]
-                    )
-                
-                # Add packet to segment
-                self.segments[call_id].add_packet(
-                    payload=rtp_payload,
-                    seq=rtp.sequence_number
-                )
-                
-                # Check if segment should be published
-                self.publish_current_segment(call_id)
-
-    def check_call_timeouts(self):
-        """Check for inactive calls"""
-        while not self.should_stop:
-            current_time = time.monotonic()
-            with self.lock:
-                for call_id, call_info in list(self.calls.items()):
-                    if call_info.is_active:
-                        # Check for 30 seconds of inactivity
-                        if current_time - call_info.last_packet_time >= 30:
-                            print(f"Call {call_id} timed out")
-                            call_info.is_active = False
-                            # Publish any remaining segment
-                            if call_id in self.segments:
-                                self.publish_current_segment(call_id)
-                            # Publish call end signal
-                            self.publisher.publish_call_end(call_id, call_info.client_ip)
-            time.sleep(1)
 
     def start_capture(self):
         """Start capturing packets"""
@@ -529,23 +582,44 @@ class VoiceStreamCapture:
         timeout_thread.start()
         
         try:
-            print("Starting voice stream capture...")
+            print("\nStarting voice stream capture...")
             print("Listening for SIP and RTP packets...")
             
-            # Capture all UDP traffic
+            # Capture UDP traffic in RTP port range
+            filter_str = "udp portrange 10000-20000 or udp port 5060"
+            print(f"Packet filter: {filter_str}")
+            
             sniff(
-                filter="udp",
+                filter=filter_str,
                 prn=self.packet_callback,
                 store=0,
                 stop_filter=lambda pkt: self.should_stop
             )
         except Exception as e:
-            print(f"Error during capture: {e}")
+            print(f"\nError during capture: {e}")
             import traceback
             traceback.print_exc()
         finally:
             self.should_stop = True
             self.publisher.close()
+
+    def check_call_timeouts(self):
+        """Check for inactive calls"""
+        while not self.should_stop:
+            current_time = time.monotonic()
+            with self.lock:
+                for call_id, call_info in list(self.calls.items()):
+                    if call_info.is_active and call_info.call_direction == 'outgoing':  # Only check outgoing calls
+                        # Check for 30 seconds of inactivity
+                        if current_time - call_info.last_packet_time >= 30:
+                            print(f"\nOutgoing call {call_id} timed out")
+                            call_info.is_active = False
+                            # Publish any remaining segment
+                            if call_id in self.segments:
+                                self.publish_current_segment(call_id)
+                            # Publish call end signal
+                            self.publisher.publish_call_end(call_id, call_info.from_ip)
+            time.sleep(1)
 
 def main():
     import argparse
@@ -568,7 +642,7 @@ def main():
     print(f"Starting capture with {args.duration} second segments...")
     print(f"Maximum memory usage: {args.max_memory}MB")
     
-    capture = VoiceStreamCapture(duration_threshold=args.duration)
+    capture = VoiceStreamCapture(duration_threshold=args.duration)  # Make sure to pass the duration argument
     capture.start_capture()
 
 if __name__ == "__main__":
