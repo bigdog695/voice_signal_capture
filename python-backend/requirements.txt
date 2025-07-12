@@ -5,14 +5,18 @@ websockets==12.0
 pydantic>=2.0.0
 python-multipart==0.0.6
 
-# ASR相关依赖 - 模仿asr folder的requirements
-modelscope
-funasr>=0.8.1
-torch==2.1.2
-torchaudio==2.1.2  # funasr的隐式依赖，用于音频处理
+datasets
+addict
+torch
+Pillow
+simplejson
+torchaudio
+sortedcontainers
+modelscope[audio]
+soundfile==0.12.1
 numpy==1.26.4
-transformers  # ModelScope需要此库来从HuggingFace Hub下载模型
 
-# 音频处理依赖（可选，如果需要）
-# librosa  # 音频处理库
-# soundfile  # 音频文件读写
+
+# 最小音频处理依赖
+scipy==1.11.4
+packaging>=21.0

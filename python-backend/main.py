@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import json
 import asyncio
+import time
 from typing import Dict, List, Optional
 from pydantic import BaseModel
 from datetime import datetime
@@ -11,21 +12,21 @@ import numpy as np
 import logging
 
 # ASR相关配置
-MODEL_NAME: str = "paraformer-zh-streaming"
+MODEL_NAME: str = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
 MODEL_REV: str = "v2.0.4"
 DEVICE: str = "cpu"
 
 # 音频参数配置
 CHUNK_SIZE = [0, 10, 5]  # 600ms frame
-ENC_LB = 4  # encoder look-back (chunks)
+ENC_LB = 4  # encoder look-back (chunks) 
 DEC_LB = 1  # decoder look-back (chunks)
-SAMPLES_PER_FRAME = CHUNK_SIZE[1] * 960  # 9600
-BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2   # 19200 (16-bit PCM)
+STRIDE_SIZE = CHUNK_SIZE[1] * 960  # 9600
+BYTES_PER_FRAME = STRIDE_SIZE * 2   # 19200 (16-bit PCM)
 
 # 设置日志
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.DEBUG,  # 改为DEBUG级别以获取更详细的日志
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 )
 log = logging.getLogger("VoiceChatBackend")
 
@@ -64,32 +65,103 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ASR模型初始化 - FunASR是必选项
-asr_model = None
+# ASR模型初始化 - 最小化ModelScope使用
+inference_pipeline = None
 try:
-    log.info(f"加载FunASR模型 '{MODEL_NAME}' (streaming)...")
-    from funasr import AutoModel
-    asr_model = AutoModel(
+    log.info(f"加载ASR模型 '{MODEL_NAME}' ...")
+    
+    import os
+    from modelscope.pipelines import pipeline
+    from modelscope.utils.constant import Tasks
+    
+    # 设置模型缓存目录
+    os.environ["MODELSCOPE_CACHE"] = "./model_cache"
+    
+    # 创建推理pipeline (优先使用本地缓存)
+    inference_pipeline = pipeline(
+        task=Tasks.auto_speech_recognition,
         model=MODEL_NAME,
         model_revision=MODEL_REV,
-        mode="online",
-        device=DEVICE,
-        hub="hf",  # 使用Hugging Face hub
+        cache_dir=os.environ.get("MODELSCOPE_CACHE", "./model_cache")
     )
+    
     log.info("ASR模型加载成功")
 except ImportError as e:
-    log.error("FunASR未安装！这是必选依赖，请安装FunASR")
-    log.error("安装命令: pip install funasr modelscope torch torchaudio")
-    raise RuntimeError("FunASR是必选依赖，请先安装") from e
+    log.error("ModelScope未正确安装")
+    raise RuntimeError("ModelScope依赖缺失") from e
 except Exception as exc:
     log.error(f"ASR模型加载失败: {exc}")
-    log.error("请检查网络连接和模型下载")
     raise RuntimeError(f"ASR模型加载失败: {exc}") from exc
 
 # 模拟数据库
 chat_sessions: Dict[str, ChatSession] = {}
 active_connections: Dict[str, WebSocket] = {}
 user_chat_history: Dict[str, List[str]] = {}  # user_id -> [chat_id, ...]
+
+# 启动时初始化示例数据
+def init_sample_data():
+    """初始化示例数据"""
+    user_id = "user_001"
+    
+    # 创建几个示例聊天记录
+    for i in range(3):
+        chat_id = f"chat_{i+1:03d}"
+        session = ChatSession(
+            id=chat_id,
+            user_id=user_id,
+            title=f"Call Session {i+1}",
+            status="ended",
+            created_at=datetime.now(),
+            ended_at=datetime.now(),
+            messages=[
+                ChatMessage(
+                    id=f"msg_{chat_id}_001",
+                    chat_id=chat_id,
+                    speaker="user",
+                    content=f"你好，这是第{i+1}次通话的用户消息。",
+                    timestamp=datetime.now()
+                ),
+                ChatMessage(
+                    id=f"msg_{chat_id}_002",
+                    chat_id=chat_id,
+                    speaker="assistant",
+                    content=f"您好！这是第{i+1}次通话的AI回复。很高兴为您服务。",
+                    timestamp=datetime.now()
+                )
+            ]
+        )
+        chat_sessions[chat_id] = session
+        
+        # 添加到用户聊天历史
+        if user_id not in user_chat_history:
+            user_chat_history[user_id] = []
+        user_chat_history[user_id].append(chat_id)
+    
+    # 创建一个活跃的聊天会话
+    active_chat_id = "chat_active_001"
+    active_session = ChatSession(
+        id=active_chat_id,
+        user_id=user_id,
+        title="Active Call Session",
+        status="active",
+        created_at=datetime.now(),
+        messages=[
+            ChatMessage(
+                id=f"msg_{active_chat_id}_001",
+                chat_id=active_chat_id,
+                speaker="user",
+                content="这是一个正在进行的通话...",
+                timestamp=datetime.now()
+            )
+        ]
+    )
+    chat_sessions[active_chat_id] = active_session
+    user_chat_history[user_id].append(active_chat_id)
+    
+    log.info(f"示例数据初始化完成: {len(chat_sessions)} 个聊天会话")
+
+# 立即初始化示例数据
+init_sample_data()
 
 @app.get("/")
 async def root():
@@ -129,7 +201,7 @@ async def asr_info():
         "model_revision": MODEL_REV,
         "device": DEVICE,
         "chunk_size": CHUNK_SIZE,
-        "samples_per_frame": SAMPLES_PER_FRAME,
+        "stride_size": STRIDE_SIZE,
         "bytes_per_frame": BYTES_PER_FRAME
     }
 
@@ -507,153 +579,175 @@ async def simulate_conversation(websocket: WebSocket, chat_id: str):
 async def asr_websocket_endpoint(websocket: WebSocket):
     """ASR WebSocket端点 - 实时语音识别"""
     await websocket.accept()
-    log.info("ASR WebSocket连接已建立")
+    connection_start = time.time()
+    log.info(f"ASR WebSocket连接已建立 - 时间戳: {connection_start}")
     
     # 初始化ASR状态
     cache: dict = {}
     buf = bytearray()
+    sample_offset = 0  # ModelScope pipeline需要的偏移量
+    
+    # 性能统计
+    frame_count = 0
+    total_audio_received = 0
+    total_processing_time = 0
+    last_log_time = time.time()
     
     try:
         while True:
             # 接收音频字节数据
+            receive_start = time.time()
             chunk = await websocket.receive_bytes()
+            receive_time = time.time() - receive_start
+            
+            chunk_size = len(chunk)
+            total_audio_received += chunk_size
             buf.extend(chunk)
             
+            log.debug(f"收到音频块: {chunk_size} 字节, 接收耗时: {receive_time*1000:.2f}ms, 缓冲区长度: {len(buf)}")
+            
             # 处理完整音频帧
+            frames_processed = 0
             while len(buf) >= BYTES_PER_FRAME:
+                frame_start = time.time()
                 frame = bytes(buf[:BYTES_PER_FRAME])
                 del buf[:BYTES_PER_FRAME]
                 
                 # 转换为浮点音频数据
+                conversion_start = time.time()
                 audio = (np.frombuffer(frame, dtype=np.int16)
                            .astype(np.float32) / 32768.0)
+                conversion_time = time.time() - conversion_start
                 
-                # 使用FunASR进行识别
-                result = asr_model.generate(
-                    input=audio,
+                # 使用ModelScope pipeline进行流式识别
+                asr_start = time.time()
+                
+                result = inference_pipeline(
+                    audio,
                     cache=cache,
                     is_final=False,
-                    chunk_size=CHUNK_SIZE,
                     encoder_chunk_look_back=ENC_LB,
-                    decoder_chunk_look_back=DEC_LB,
+                    decoder_chunk_look_back=DEC_LB
                 )
+                asr_time = time.time() - asr_start
                 
                 # 提取识别文本
+                extract_start = time.time()
                 text = _extract_asr_text(result)
+                extract_time = time.time() - extract_start
+                
+                frame_total_time = time.time() - frame_start
+                total_processing_time += frame_total_time
+                frame_count += 1
+                frames_processed += 1
+                
+                # 发送结果
                 if text:
+                    send_start = time.time()
                     await websocket.send_text(text)
-                    log.info(f"ASR识别: {text}")
+                    send_time = time.time() - send_start
+                    log.info(f"ASR识别[帧{frame_count}]: '{text}' | 处理: {frame_total_time*1000:.2f}ms (转换:{conversion_time*1000:.2f}ms + ASR:{asr_time*1000:.2f}ms + 提取:{extract_time*1000:.2f}ms + 发送:{send_time*1000:.2f}ms)")
+                else:
+                    log.debug(f"ASR无输出[帧{frame_count}] | 处理: {frame_total_time*1000:.2f}ms (转换:{conversion_time*1000:.2f}ms + ASR:{asr_time*1000:.2f}ms + 提取:{extract_time*1000:.2f}ms)")
+            
+            # 每5秒输出一次统计信息
+            current_time = time.time()
+            if current_time - last_log_time >= 5.0:
+                avg_processing_time = (total_processing_time / frame_count * 1000) if frame_count > 0 else 0
+                connection_duration = current_time - connection_start
+                audio_rate = total_audio_received / connection_duration if connection_duration > 0 else 0
+                frame_rate = frame_count / connection_duration if connection_duration > 0 else 0
+                
+                log.info(f"=== ASR性能统计 ===")
+                log.info(f"连接时长: {connection_duration:.1f}s")
+                log.info(f"总音频数据: {total_audio_received} 字节 ({audio_rate:.1f} 字节/秒)")
+                log.info(f"处理帧数: {frame_count} ({frame_rate:.2f} 帧/秒)")
+                log.info(f"平均处理时间: {avg_processing_time:.2f}ms/帧")
+                log.info(f"缓冲区状态: {len(buf)} 字节")
+                
+                last_log_time = current_time
                     
     except WebSocketDisconnect:
-        log.info("ASR客户端断开连接 - 处理最终音频")
+        disconnect_time = time.time()
+        log.info(f"ASR客户端断开连接 - 处理最终音频 | 连接时长: {disconnect_time - connection_start:.2f}s")
+        
         # 处理剩余的音频缓冲区
         if buf:
+            final_start = time.time()
             audio = (np.frombuffer(buf, dtype=np.int16)
                        .astype(np.float32) / 32768.0)
-            result = asr_model.generate(
-                input=audio,
+            result = inference_pipeline(
+                audio,
                 cache=cache,
                 is_final=True,
-                chunk_size=CHUNK_SIZE,
                 encoder_chunk_look_back=ENC_LB,
                 decoder_chunk_look_back=DEC_LB,
             )
+            final_time = time.time() - final_start
             text = _extract_asr_text(result)
             if text:
                 await websocket.send_text(text)
-                log.info(f"ASR最终识别: {text}")
+                log.info(f"ASR最终识别: '{text}' | 处理: {final_time*1000:.2f}ms")
+            else:
+                log.info(f"ASR最终处理无输出 | 处理: {final_time*1000:.2f}ms")
     except Exception as e:
-        log.error(f"ASR WebSocket错误: {e}")
+        error_time = time.time()
+        log.error(f"ASR WebSocket错误: {e} | 连接时长: {error_time - connection_start:.2f}s")
         await websocket.close(code=1011, reason="ASR processing error")
     finally:
-        log.info("ASR WebSocket连接已关闭")
+        final_time = time.time()
+        total_duration = final_time - connection_start
+        avg_processing = (total_processing_time / frame_count * 1000) if frame_count > 0 else 0
+        log.info(f"ASR WebSocket连接已关闭 | 总时长: {total_duration:.2f}s | 总帧数: {frame_count} | 平均处理: {avg_processing:.2f}ms/帧")
 
 def _extract_asr_text(result):
-    """从FunASR结果中提取文本 - 模仿asr folder的实现"""
+    """从ModelScope pipeline结果中提取文本"""
+    log.debug(f"ASR结果类型: {type(result)}, 内容: {result}")
+    
     if not result:
+        log.debug("ASR结果为空")
         return None
+    
+    # ModelScope pipeline返回格式: [{"value": "识别的文本"}]
     if isinstance(result, list) and result:
+        log.debug(f"ASR结果是列表，长度: {len(result)}")
         item = result[0]
+        log.debug(f"列表第一项类型: {type(item)}, 内容: {item}")
+        
         if isinstance(item, dict):
-            for key in ("text", "transcript", "result", "sentence"):
+            log.debug(f"字典键: {list(item.keys())}")
+            # ModelScope格式主要是 "value" 键
+            for key in ("value", "text", "transcript", "result", "sentence"):
                 if key in item and item[key]:
-                    return item[key]
+                    text = item[key].strip()
+                    if text:  # 确保文本不为空
+                        log.debug(f"从键'{key}'提取到文本: '{text}'")
+                        return text
+            log.debug("字典中未找到有效文本")
         elif isinstance(item, str):
-            return item
+            text = item.strip()
+            if text:
+                log.debug(f"列表第一项是字符串: '{text}'")
+                return text
     elif isinstance(result, str):
-        return result
+        text = result.strip()
+        if text:
+            log.debug(f"ASR结果是字符串: '{text}'")
+            return text
+    
+    log.debug("未能从ASR结果中提取文本")
     return None
 
-# 初始化示例数据函数
-def init_sample_data():
-    """初始化示例数据"""
-    user_id = "user_001"
-    
-    # 创建几个示例聊天记录
-    for i in range(3):
-        chat_id = f"chat_{i+1:03d}"
-        session = ChatSession(
-            id=chat_id,
-            user_id=user_id,
-            title=f"Call Session {i+1}",
-            status="ended",
-            created_at=datetime.now(),
-            ended_at=datetime.now(),
-            messages=[
-                ChatMessage(
-                    id=f"msg_{chat_id}_001",
-                    chat_id=chat_id,
-                    speaker="user",
-                    content=f"你好，这是第{i+1}次通话的用户消息。",
-                    timestamp=datetime.now()
-                ),
-                ChatMessage(
-                    id=f"msg_{chat_id}_002",
-                    chat_id=chat_id,
-                    speaker="assistant",
-                    content=f"您好！这是第{i+1}次通话的AI回复。很高兴为您服务。",
-                    timestamp=datetime.now()
-                )
-            ]
-        )
-        chat_sessions[chat_id] = session
-        
-        # 添加到用户聊天历史
-        if user_id not in user_chat_history:
-            user_chat_history[user_id] = []
-        user_chat_history[user_id].append(chat_id)
-    
-    # 创建一个活跃的聊天会话
-    active_chat_id = "chat_active_001"
-    active_session = ChatSession(
-        id=active_chat_id,
-        user_id=user_id,
-        title="Active Call Session",
-        status="active",
-        created_at=datetime.now(),
-        messages=[
-            ChatMessage(
-                id=f"msg_{active_chat_id}_001",
-                chat_id=active_chat_id,
-                speaker="user",
-                content="这是一个正在进行的通话...",
-                timestamp=datetime.now()
-            )
-        ]
-    )
-    chat_sessions[active_chat_id] = active_session
-    user_chat_history[user_id].append(active_chat_id)
-
 if __name__ == "__main__":
-    # 启动时初始化示例数据
-    init_sample_data()
-    
     log.info("========================================")
     log.info("Voice Chat Backend with ASR - v2.0.0")
+    log.info("调试模式 - 详细日志已启用")
     log.info("========================================")
     log.info("ASR模型状态: 已加载并可用")
     log.info(f"ASR模型: {MODEL_NAME} (rev: {MODEL_REV})")
     log.info(f"设备: {DEVICE}")
+    log.info(f"音频参数: CHUNK_SIZE={CHUNK_SIZE}, ENC_LB={ENC_LB}, DEC_LB={DEC_LB}")
+    log.info(f"帧大小: {STRIDE_SIZE} samples ({BYTES_PER_FRAME} bytes)")
     log.info("服务端点:")
     log.info("  - API文档: http://localhost:8000/docs")
     log.info("  - 健康检查: http://localhost:8000/health")
@@ -669,5 +763,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=True,
-        log_level="info"
+        log_level="debug"  # 设置为debug级别
     )

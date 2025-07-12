@@ -1,30 +1,37 @@
-# Dockerfile for Python Backend with ASR Support
+# syntax=docker/dockerfile:1.4
 FROM python:3.11-slim
 
-# Set the working directory in the container
 WORKDIR /app
 
-# Install system dependencies required for audio processing
 RUN apt-get update && apt-get install -y \
     libsndfile1 \
     ffmpeg \
+    git \
+    curl \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file into the container
+RUN pip install --upgrade pip wheel setuptools
+
+# ========================
+# BuildKit pip 缓存挂载
+# ========================
 COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
-# Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the model download script and pre-cache the FunASR model
+# ==========================
+# 拷贝模型缓存 + 利用 BuildKit 复用
+# ==========================
 COPY download_model.py .
-RUN python download_model.py
 
-# Copy the application code into the container
+# 使用 BuildKit 挂载 host 缓存模型
+RUN --mount=type=cache,target=/app/model_cache \
+    MODELSCOPE_CACHE=/app/model_cache \
+    python download_model.py
+
 COPY *.py ./
+ENV MODELSCOPE_CACHE=/app/model_cache
 
-# Expose the port the app runs on
 EXPOSE 8000
-
-# Define the command to run the app
-CMD ["python", "main.py"]
+CMD ["python", "main.py"]   

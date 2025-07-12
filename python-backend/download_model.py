@@ -1,6 +1,6 @@
 # python-backend/download_model.py
 """
-Download and cache the FunASR streaming model for offline usage.
+Download and cache the ModelScope ASR streaming model for offline usage.
 This script is run during Docker build to pre-cache the model.
 """
 
@@ -12,37 +12,45 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-MODEL_NAME = "paraformer-zh-streaming"   # exact HF / ModelScope repo name
+MODEL_NAME = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"   # ModelScope repo name
 MODEL_REV  = "v2.0.4"                    # keep in sync with server code
 
 def download_model():
-    """Download and cache the FunASR model."""
-    logging.info(f"Attempting to download model '{MODEL_NAME}' (rev {MODEL_REV})...")
+    """Download and cache the ModelScope ASR model."""
+    logging.info(f"Attempting to download ModelScope model '{MODEL_NAME}' (rev {MODEL_REV})...")
     
     try:
-        from funasr import AutoModel
+        from modelscope.pipelines import pipeline
+        from modelscope.utils.constant import Tasks
+        from modelscope.utils.logger import get_logger as get_ms_logger
         
-        # Instantiating AutoModel downloads and caches the model
-        model = AutoModel(
+        # 设置ModelScope日志级别
+        ms_logger = get_ms_logger(log_level=logging.INFO)
+        ms_logger.setLevel(logging.INFO)
+        
+        # 设置模型缓存目录
+        os.environ["MODELSCOPE_CACHE"] = "./model_cache"
+        
+        # Instantiating pipeline downloads and caches the model
+        inference_pipeline = pipeline(
+            task=Tasks.auto_speech_recognition,
             model=MODEL_NAME,
             model_revision=MODEL_REV,
-            mode="online",
-            device="cpu",
-            hub="hf",        # use 'ms' if you prefer ModelScope's mirror
+            cache_dir="./model_cache",
         )
-        logging.info("Model cached successfully.")
+        logging.info("ModelScope model cached successfully.")
         return True
         
-    except ImportError:
-        logging.warning("FunASR not available, model download skipped.")
+    except ImportError as e:
+        logging.warning(f"ModelScope not available: {e}. Model download skipped.")
         return False
     except Exception as exc:
-        logging.exception(f"Model download failed: {exc}")
+        logging.exception(f"ModelScope model download failed: {exc}")
         return False
 
 if __name__ == "__main__":
     success = download_model()
     if not success:
-        logging.info("Model download failed or skipped. The application will use mock mode.")
+        logging.info("ModelScope model download failed or skipped. The application will use mock mode.")
         # Don't exit with error code to allow Docker build to continue
-        exit(0)
+        exit(1)

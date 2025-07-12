@@ -123,6 +123,18 @@ class CallDisplayManager {
         this.liveCallStartTime = null;
         this.liveCallTimer = null;
         this.wsManager = new WebSocketManager();
+        
+        this.isRecording = false;
+        this.mediaRecorder = null;
+        this.audioChunks = [];
+        this.asrSocket = null;
+        this.audioContext = null;
+        this.scriptProcessor = null;
+        this.mediaStreamSource = null;
+        this.asrMessageId = null;
+        this.asrTranscriptQueue = []; // 维护已确认的文本队列
+        this.currentInterimText = ''; // 当前临时文本
+
         this.setupWebSocketCallbacks();
         this.setupEventListeners();
         this.loadSettings();
@@ -193,6 +205,11 @@ class CallDisplayManager {
                 this.closeSettings();
             }
         });
+
+        // 录音按钮
+        document.getElementById('recordBtn').addEventListener('click', () => {
+            this.toggleRecording();
+        });
     }
 
     initializeUI() {
@@ -244,6 +261,23 @@ class CallDisplayManager {
             clearInterval(this.liveCallTimer);
             this.liveCallTimer = null;
         }
+    }
+
+    showAsrWindow() {
+        document.getElementById('noCallSelected').style.display = 'none';
+        document.getElementById('callDisplay').style.display = 'none';
+        document.getElementById('liveCallDisplay').style.display = 'none';
+        document.getElementById('asrDisplay').style.display = 'flex';
+        document.getElementById('chatTitle').textContent = 'Real-time Transcription';
+        // 清空转录队列和内容
+        this.asrTranscriptQueue = [];
+        this.currentInterimText = '';
+        document.getElementById('asrContent').innerHTML = '';
+    }
+
+    hideAsrWindow() {
+        document.getElementById('asrDisplay').style.display = 'none';
+        this.showNoCallSelected();
     }
 
     showLiveCallWindow() {
@@ -510,6 +544,274 @@ class CallDisplayManager {
 
     loadSettings() {
         // 加载保存的设置（已在其他方法中实现）
+    }
+
+    // =================================================================
+    // 录音和ASR相关方法
+    // =================================================================
+
+    toggleRecording() {
+        if (this.isRecording) {
+            this.stopRecording();
+        } else {
+            this.startRecording();
+        }
+    }
+
+    async startRecording() {
+        if (this.isRecording) return;
+
+        this.showAsrWindow(); // 确保实时语音识别窗口可见
+        console.log('Starting recording...');
+        this.isRecording = true;
+        this.updateRecordButton(true);
+        this.addLiveMessage('system', 'Recording started, connecting to ASR service...', Date.now());
+        this.asrMessageId = `asr-message-${Date.now()}`;
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            this.mediaStreamSource = this.audioContext.createMediaStreamSource(stream);
+            
+            // --- WebSocket 连接 ---
+            const chatUrl = new URL(this.wsManager.url);
+            const asrUrl = `ws://${chatUrl.host}/ws`; // 使用 ws:// 协议
+            console.log(`Connecting to ASR WebSocket: ${asrUrl}`);
+            this.asrSocket = new WebSocket(asrUrl);
+            this.setupAsrSocketListeners();
+
+            // --- 音频处理 ---
+            const bufferSize = 4096;
+            const inputSampleRate = this.audioContext.sampleRate;
+            const outputSampleRate = 16000;
+
+            this.scriptProcessor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
+            this.scriptProcessor.onaudioprocess = (e) => {
+                if (!this.isRecording || !this.asrSocket || this.asrSocket.readyState !== WebSocket.OPEN) {
+                    return;
+                }
+                const inputData = e.inputBuffer.getChannelData(0);
+                const downsampledData = this.downsampleBuffer(inputData, inputSampleRate, outputSampleRate);
+                const pcmData = this.floatTo16BitPCM(downsampledData);
+                // console.log(`Sending ${pcmData.byteLength} bytes of audio data.`);
+                this.asrSocket.send(pcmData);
+            };
+
+            this.mediaStreamSource.connect(this.scriptProcessor);
+            this.scriptProcessor.connect(this.audioContext.destination);
+
+            // 保存流以备停止
+            this.mediaStream = stream;
+
+        } catch (err) {
+            console.error('Error starting recording:', err);
+            this.addLiveMessage('system', `Error starting recording: ${err.message}`, Date.now());
+            this.stopRecording(); // 清理
+        }
+    }
+
+    stopRecording() {
+        if (!this.isRecording) return;
+
+        this.hideAsrWindow(); // 录音结束时隐藏ASR窗口
+        console.log('Stopping recording...');
+        this.isRecording = false;
+        this.updateRecordButton(false);
+        this.addLiveMessage('system', 'Recording stopped.', Date.now());
+
+        // 清理转录队列
+        this.asrTranscriptQueue = [];
+        this.currentInterimText = '';
+
+        // 停止音频流
+        if (this.mediaStream) {
+            this.mediaStream.getTracks().forEach(track => track.stop());
+            this.mediaStream = null;
+        }
+
+        // 断开并清理音频节点
+        if (this.scriptProcessor) {
+            this.scriptProcessor.disconnect();
+            this.scriptProcessor = null;
+        }
+        if (this.mediaStreamSource) {
+            this.mediaStreamSource.disconnect();
+            this.mediaStreamSource = null;
+        }
+        if (this.audioContext) {
+            this.audioContext.close();
+            this.audioContext = null;
+        }
+
+        // 关闭ASR WebSocket
+        if (this.asrSocket) {
+            if (this.asrSocket.readyState === WebSocket.OPEN) {
+                // 发送结束信号
+                this.asrSocket.send(JSON.stringify({ "is_finished": true }));
+            }
+            this.asrSocket.close();
+            this.asrSocket = null;
+        }
+    }
+
+    setupAsrSocketListeners() {
+        if (!this.asrSocket) return;
+
+        this.asrSocket.onopen = () => {
+            console.log('ASR WebSocket connected.');
+            this.addLiveMessage('system', 'ASR service connected.', Date.now());
+        };
+
+        this.asrSocket.onmessage = (event) => {
+            console.log('Received ASR message:', event.data);
+            this.handleAsrMessage(event.data);
+        };
+
+        this.asrSocket.onclose = (event) => {
+            console.log('ASR WebSocket disconnected:', event.code, event.reason);
+            if(this.isRecording){ // 如果仍在录音状态，说明是异常关闭
+                this.addLiveMessage('system', `ASR service disconnected. Code: ${event.code}, Reason: ${event.reason || 'No reason given'}`, Date.now());
+                this.stopRecording(); // 自动停止录音
+            }
+        };
+
+        this.asrSocket.onerror = (error) => {
+            console.error('ASR WebSocket error:', error);
+            this.addLiveMessage('system', 'ASR service connection error. Check console for details.', Date.now());
+            if(this.isRecording){
+               this.stopRecording(); // 自动停止录音
+            }
+        };
+    }
+
+    handleAsrMessage(data) {
+        console.log('Handling ASR message data:', data);
+        let text = '';
+        let isFinal = false;
+
+        try {
+            // 首先尝试解析为JSON，这是FunASR的标准格式
+            const result = JSON.parse(data);
+            text = result.text || '';
+            isFinal = result.is_final || false;
+            console.log(`Parsed JSON ASR result - text: "${text}", is_final: ${isFinal}`);
+        } catch (error) {
+            // 如果解析失败，直接将data视为纯文本字符串
+            // 这可以兼容没有严格遵循JSON格式的后端实现
+            console.warn('Could not parse ASR message as JSON, treating as plain text. Raw data:', data);
+            text = data.toString().trim();
+            // 当收到纯文本时，我们假定它是一个最终结果
+            isFinal = true; 
+        }
+
+        if (text && text.length > 0) {
+            console.log(`Updating UI with text: "${text}", isFinal: ${isFinal}`);
+            console.log(`Current queue length: ${this.asrTranscriptQueue.length}, Current interim: "${this.currentInterimText}"`);
+            this.updateAsrContent(text, isFinal);
+        } else {
+            console.log('ASR message does not contain processable text.');
+        }
+    }
+
+    updateAsrContent(text, isFinal) {
+        const asrContent = document.getElementById('asrContent');
+        if (!asrContent) return;
+
+        console.log(`Before update - Queue: [${this.asrTranscriptQueue.join(' | ')}], Interim: "${this.currentInterimText}"`);
+
+        if (isFinal) {
+            // 如果是最终结果，将其添加到确认队列中
+            if (text.trim()) {
+                this.asrTranscriptQueue.push(text.trim());
+                console.log('Added final text to queue:', text.trim());
+                console.log('Updated queue:', this.asrTranscriptQueue);
+            }
+            // 清空当前临时文本
+            this.currentInterimText = '';
+        } else {
+            // 如果是临时结果，更新当前临时文本
+            this.currentInterimText = text.trim();
+            console.log('Updated interim text:', this.currentInterimText);
+        }
+
+        // 重新构建显示内容：已确认文本 + 当前临时文本
+        const finalText = this.asrTranscriptQueue.join(' ');
+        
+        // 使用HTML来区分最终文本和临时文本的样式
+        let html = '';
+        if (finalText) {
+            html += `<span class="final-transcript">${finalText}</span>`;
+        }
+        if (this.currentInterimText) {
+            html += `<span class="interim-transcript">${finalText ? ' ' : ''}${this.currentInterimText}</span>`;
+        }
+        
+        asrContent.innerHTML = html;
+        
+        // 自动滚动到底部
+        const asrContentWrapper = document.querySelector('.asr-content-wrapper');
+        if (asrContentWrapper) {
+            asrContentWrapper.scrollTop = asrContentWrapper.scrollHeight;
+        }
+        
+        console.log(`After update - Final segments: ${this.asrTranscriptQueue.length}, Current interim: "${this.currentInterimText}"`);
+        console.log(`Displayed HTML: ${html}`);
+    }
+
+    updateRecordButton(isRecording) {
+        const recordBtn = document.getElementById('recordBtn');
+        if (isRecording) {
+            recordBtn.classList.add('recording');
+            recordBtn.title = 'Stop Recording';
+            recordBtn.innerHTML = `
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M5 3.5h6A1.5 1.5 0 0 1 12.5 5v6a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 11V5A1.5 1.5 0 0 1 5 3.5z"/>
+                </svg>
+            `;
+        } else {
+            recordBtn.classList.remove('recording');
+            recordBtn.title = 'Start Recording';
+            recordBtn.innerHTML = `
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M8 12a4 4 0 0 0 4-4V4a4 4 0 0 0-8 0v4a4 4 0 0 0 4 4zm0 1a5 5 0 0 1-5-5V4a5 5 0 0 1 10 0v4a5 5 0 0 1-5 5z"/>
+                    <path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z"/>
+                </svg>
+            `;
+        }
+    }
+
+    // --- 音频处理辅助函数 ---
+    downsampleBuffer(buffer, inputSampleRate, outputSampleRate) {
+        if (inputSampleRate === outputSampleRate) {
+            return buffer;
+        }
+        const sampleRateRatio = inputSampleRate / outputSampleRate;
+        const newLength = Math.round(buffer.length / sampleRateRatio);
+        const result = new Float32Array(newLength);
+        let offsetResult = 0;
+        let offsetBuffer = 0;
+        while (offsetResult < result.length) {
+            const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+            let accum = 0, count = 0;
+            for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+                accum += buffer[i];
+                count++;
+            }
+            result[offsetResult] = accum / count;
+            offsetResult++;
+            offsetBuffer = nextOffsetBuffer;
+        }
+        return result;
+    }
+
+    floatTo16BitPCM(input) {
+        const output = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++) {
+            const s = Math.max(-1, Math.min(1, input[i]));
+            output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        return output.buffer;
     }
 }
 

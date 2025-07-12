@@ -1,4 +1,4 @@
-# Docker Compose for Voice Chat Backend with ASR
+# Docker Compose for Voice Chat Backend with ModelScope ASR
 version: '3.8'
 
 services:
@@ -8,9 +8,10 @@ services:
       - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
+      - MODELSCOPE_CACHE=/app/model_cache
     volumes:
       # 可选：挂载模型缓存目录以避免重复下载
-      - ./model_cache:/root/.cache/funasr
+      - ./model_cache:/app/model_cache
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

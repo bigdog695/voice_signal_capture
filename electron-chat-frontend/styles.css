@@ -209,6 +209,25 @@ body {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
+.action-btn.recording {
+    background: #ef4444;
+    color: white;
+    border-color: #dc2626;
+    animation: pulse-record 1.5s infinite;
+}
+
+@keyframes pulse-record {
+    0% {
+        box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+    }
+}
+
 .messages-container {
     flex: 1;
     overflow-y: auto;
@@ -990,6 +1009,55 @@ body {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
+/* 实时语音识别窗口样式 */
+.asr-display {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: #f8fafc;
+    border-radius: 16px;
+    padding: 24px;
+}
+
+.asr-header {
+    padding-bottom: 16px;
+    border-bottom: 1px solid #e2e8f0;
+    margin-bottom: 16px;
+}
+
+.asr-header h3 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #0f172a;
+}
+
+.asr-content-wrapper {
+    flex: 1;
+    background: white;
+    border-radius: 12px;
+    padding: 20px;
+    overflow-y: auto;
+    border: 1px solid #e2e8f0;
+}
+
+.asr-content {
+    font-size: 16px;
+    line-height: 1.7;
+    color: #334155;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.asr-content .final-transcript {
+    color: #1e293b;
+    font-weight: 500;
+}
+
+.asr-content .interim-transcript {
+    color: #64748b;
+}
+
+
 /* 实时通话窗口样式 */
 .live-call-display {
     height: 100%;
@@ -997,10 +1065,6 @@ body {
     flex-direction: column;
     background: rgba(255, 255, 255, 0.95);
     border-radius: 16px;
-    margin: 24px;
-    backdrop-filter: blur(20px);
-    border: 1px solid rgba(0, 0, 0, 0.05);
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
 }
 
 .live-call-header {
@@ -1009,15 +1073,12 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: rgba(16, 185, 129, 0.05);
-    border-radius: 16px 16px 0 0;
 }
 
 .live-call-header h3 {
-    font-size: 18px;
+    font-size: 16px;
     font-weight: 600;
     color: #0f172a;
-    margin: 0;
 }
 
 .call-controls {
@@ -1027,95 +1088,102 @@ body {
 }
 
 .connection-indicator {
-    padding: 6px 12px;
-    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    font-weight: 500;
+    color: #475569;
+    padding: 6px 10px;
+    border-radius: 16px;
+    background: rgba(0, 0, 0, 0.04);
 }
 
 .connection-indicator.connected {
-    background: rgba(16, 185, 129, 0.1);
     color: #059669;
-    border: 1px solid rgba(16, 185, 129, 0.2);
+    background: rgba(16, 185, 129, 0.1);
 }
 
-.connection-indicator.disconnected {
-    background: rgba(239, 68, 68, 0.1);
-    color: #dc2626;
-    border: 1px solid rgba(239, 68, 68, 0.2);
+.connection-indicator.connected::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #10b981;
 }
 
 .minimize-btn {
     padding: 8px;
-    background: rgba(255, 255, 255, 0.8);
-    border: 1px solid rgba(0, 0, 0, 0.06);
-    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.04);
+    border: none;
+    border-radius: 50%;
     cursor: pointer;
     color: #718096;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: all 0.2s;
 }
 
 .minimize-btn:hover {
-    background: rgba(255, 255, 255, 1);
-    color: #4a5568;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    background: rgba(0, 0, 0, 0.08);
+    color: #334155;
 }
 
 .live-messages {
     flex: 1;
     overflow-y: auto;
-    padding: 20px 24px;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
 }
 
 .live-message {
-    margin-bottom: 16px;
     display: flex;
     flex-direction: column;
-    animation: messageSlideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    max-width: 80%;
 }
 
 .live-message.user {
+    align-self: flex-end;
     align-items: flex-end;
 }
 
 .live-message.assistant {
+    align-self: flex-start;
     align-items: flex-start;
 }
 
+.live-message.system {
+    align-self: center;
+    font-size: 12px;
+    color: #64748b;
+    background: #f1f5f9;
+    padding: 4px 12px;
+    border-radius: 12px;
+}
+
 .live-message-content {
-    max-width: 80%;
-    padding: 12px 16px;
-    border-radius: 16px;
-    font-size: 14px;
+    padding: 10px 14px;
+    border-radius: 12px;
     line-height: 1.5;
-    word-wrap: break-word;
-    font-weight: 400;
-    letter-spacing: -0.01em;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .live-message.user .live-message-content {
-    background: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%);
+    background: #3b82f6;
     color: white;
-    border-bottom-right-radius: 6px;
+    border-bottom-right-radius: 4px;
 }
 
 .live-message.assistant .live-message-content {
-    background: rgba(255, 255, 255, 0.95);
+    background: #e2e8f0;
     color: #1e293b;
-    border: 1px solid rgba(0, 0, 0, 0.05);
-    backdrop-filter: blur(10px);
-    border-bottom-left-radius: 6px;
+    border-bottom-left-radius: 4px;
 }
 
 .live-message-time {
     font-size: 11px;
     color: #94a3b8;
-    margin-top: 6px;
-    font-weight: 400;
+    margin-top: 4px;
+    padding: 0 4px;
 }
 
 .live-message-typing {
