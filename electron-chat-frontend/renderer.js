@@ -124,6 +124,10 @@ class CallDisplayManager {
         this.liveCallTimer = null;
         this.wsManager = new WebSocketManager();
         
+        // 本机监听相关
+        this.monitorWs = null;
+        this.isMonitoring = false;
+        
         this.isRecording = false;
         this.mediaRecorder = null;
         this.audioChunks = [];
@@ -149,18 +153,30 @@ class CallDisplayManager {
         this.wsManager.onStatusChange((status) => {
             this.updateConnectionStatus(status);
             
-            if (status === 'connected') {
-                this.showActiveCall();
-            } else if (status === 'disconnected') {
-                this.hideActiveCall();
-            }
+            // 移除自动显示活跃通话的逻辑
+            // 现在需要用户手动点击按钮来连接
         });
 
-        // 自动连接
-        this.wsManager.connect();
+        // 不再自动连接，等待用户手动操作
+        // this.wsManager.connect();
     }
 
     setupEventListeners() {
+        // 查看当前通话按钮
+        document.getElementById('viewCurrentCallBtn').addEventListener('click', () => {
+            this.connectToCurrentCall();
+        });
+        
+        // 查看本机通话监听按钮
+        document.getElementById('viewLocalMonitorBtn').addEventListener('click', () => {
+            this.connectToLocalMonitor();
+        });
+        
+        // 关闭监听按钮
+        document.getElementById('closeMonitorBtn').addEventListener('click', () => {
+            this.disconnectLocalMonitor();
+        });
+
         // 查看活跃通话按钮
         document.getElementById('viewActiveCallBtn').addEventListener('click', () => {
             this.showLiveCallWindow();
@@ -812,6 +828,220 @@ class CallDisplayManager {
             output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
         return output.buffer;
+    }
+
+    // 连接到当前通话
+    connectToCurrentCall() {
+        if (this.wsManager.ws && this.wsManager.ws.readyState === WebSocket.OPEN) {
+            this.showLiveCallWindow();
+        } else {
+            // 尝试连接
+            this.wsManager.connect();
+            
+            // 监听连接状态
+            const checkConnection = () => {
+                if (this.wsManager.ws && this.wsManager.ws.readyState === WebSocket.OPEN) {
+                    this.showLiveCallWindow();
+                } else if (this.wsManager.ws && this.wsManager.ws.readyState === WebSocket.CLOSED) {
+                    alert('没有正在进行的通话');
+                } else {
+                    // 连接中，等待一会再检查
+                    setTimeout(checkConnection, 1000);
+                }
+            };
+            
+            setTimeout(checkConnection, 500);
+        }
+    }
+    
+    // 连接到本机通话监听
+    connectToLocalMonitor() {
+        if (this.isMonitoring) {
+            this.showLocalMonitorWindow();
+            return;
+        }
+        
+        this.showLocalMonitorWindow();
+        this.updateMonitorStatus('连接中...');
+        
+        try {
+            const chatUrl = new URL(this.wsManager.url);
+            const monitorUrl = `ws://${chatUrl.host}/listening`;
+            console.log('=== 连接本机监听服务 ===');
+            console.log('监听URL:', monitorUrl);
+            
+            this.monitorWs = new WebSocket(monitorUrl);
+            console.log('WebSocket对象创建成功');
+            this.setupMonitorWebSocket();
+        } catch (error) {
+            console.error('连接本机监听失败:', error);
+            alert('连接本机监听失败: ' + error.message);
+            this.hideLocalMonitorWindow();
+        }
+    }
+    
+    // 设置监听WebSocket事件
+    setupMonitorWebSocket() {
+        if (!this.monitorWs) return;
+        
+        this.monitorWs.onopen = () => {
+            console.log('本机监听连接成功');
+            this.isMonitoring = true;
+            this.updateMonitorStatus('已连接', true);
+        };
+        
+        this.monitorWs.onmessage = (event) => {
+            console.log('=== 监听端点接收消息 ===');
+            console.log('原始数据类型:', typeof event.data);
+            console.log('原始数据长度:', event.data.length);
+            console.log('原始数据内容:', event.data);
+            
+            try {
+                // 尝试解析为JSON（保持向后兼容）
+                const data = JSON.parse(event.data);
+                console.log('成功解析为JSON:', data);
+                console.log('JSON数据类型:', data.type);
+                console.log('JSON文本内容:', data.text);
+                this.handleMonitorMessage(data);
+            } catch (error) {
+                console.log('JSON解析失败，处理为纯文本流');
+                console.log('解析错误:', error.message);
+                // 如果不是JSON，直接处理为文本流
+                this.addMonitorMessage(event.data);
+            }
+            console.log('=== 消息处理完成 ===');
+        };
+        
+        this.monitorWs.onclose = () => {
+            console.log('本机监听连接关闭');
+            this.isMonitoring = false;
+            this.updateMonitorStatus('连接断开', false);
+        };
+        
+        this.monitorWs.onerror = (error) => {
+            console.error('本机监听连接错误:', error);
+            this.updateMonitorStatus('连接错误', false);
+        };
+    }
+    
+    // 处理监听消息
+    handleMonitorMessage(data) {
+        console.log('=== 处理JSON监听消息 ===');
+        console.log('数据类型:', data.type);
+        console.log('完整数据:', data);
+        
+        if (data.type === 'listening_text') {
+            console.log('处理 listening_text 类型消息');
+            console.log('文本内容:', data.text);
+            this.addMonitorMessage(data.text);
+        } else if (data.type === 'status') {
+            console.log('处理 status 类型消息');
+            console.log('监听状态:', data.message);
+        } else {
+            console.log('未知消息类型:', data.type);
+        }
+        console.log('=== JSON消息处理完成 ===');
+    }
+    
+    // 添加监听消息到界面
+    addMonitorMessage(text) {
+        console.log('=== 添加监听消息到界面 ===');
+        console.log('文本内容类型:', typeof text);
+        console.log('文本内容长度:', text.length);
+        console.log('文本内容:', text);
+        
+        const monitorMessages = document.getElementById('monitorMessages');
+        if (!monitorMessages) {
+            console.log('找不到 monitorMessages 元素');
+            return;
+        }
+        
+        // 查找当前活跃的流式消息元素
+        let currentStreamElement = monitorMessages.querySelector('.monitor-message.streaming');
+        
+        if (!currentStreamElement) {
+            // 如果没有活跃的流式消息，创建新的
+            currentStreamElement = document.createElement('div');
+            currentStreamElement.className = 'monitor-message streaming';
+            
+            const now = new Date();
+            const timeString = now.toLocaleTimeString();
+            
+            currentStreamElement.innerHTML = `
+                <div class="monitor-message-text"></div>
+                <div class="monitor-message-time">${timeString}</div>
+            `;
+            
+            monitorMessages.appendChild(currentStreamElement);
+        }
+        
+        // 更新流式消息的文本内容
+        const textElement = currentStreamElement.querySelector('.monitor-message-text');
+        if (textElement) {
+            textElement.textContent = text;
+        }
+        
+        // 自动滚动到最新消息
+        monitorMessages.scrollTop = monitorMessages.scrollHeight;
+        
+        // 限制消息数量
+        const maxMessages = 50;
+        if (monitorMessages.children.length > maxMessages) {
+            monitorMessages.removeChild(monitorMessages.firstChild);
+        }
+    }
+    
+    // 断开本机监听
+    disconnectLocalMonitor() {
+        // 将当前流式消息标记为完成
+        const monitorMessages = document.getElementById('monitorMessages');
+        if (monitorMessages) {
+            const streamingElement = monitorMessages.querySelector('.monitor-message.streaming');
+            if (streamingElement) {
+                streamingElement.classList.remove('streaming');
+            }
+        }
+        
+        if (this.monitorWs) {
+            this.monitorWs.close();
+            this.monitorWs = null;
+        }
+        this.isMonitoring = false;
+        this.hideLocalMonitorWindow();
+    }
+    
+    // 显示本机监听窗口
+    showLocalMonitorWindow() {
+        document.getElementById('noCallSelected').style.display = 'none';
+        document.getElementById('callDisplay').style.display = 'none';
+        document.getElementById('liveCallDisplay').style.display = 'none';
+        document.getElementById('asrDisplay').style.display = 'none';
+        document.getElementById('localMonitorDisplay').style.display = 'flex';
+        document.getElementById('chatTitle').textContent = '本机通话监听';
+        
+        // 清空之前的消息
+        document.getElementById('monitorMessages').innerHTML = '';
+    }
+    
+    // 隐藏本机监听窗口
+    hideLocalMonitorWindow() {
+        document.getElementById('localMonitorDisplay').style.display = 'none';
+        this.showNoCallSelected();
+    }
+    
+    // 更新监听连接状态
+    updateMonitorStatus(status, isConnected = false) {
+        const indicator = document.getElementById('monitorConnectionIndicator');
+        if (!indicator) return;
+        
+        indicator.textContent = status;
+        indicator.className = 'connection-indicator';
+        
+        if (isConnected) {
+            indicator.classList.add('connected');
+        } else {
+            indicator.classList.add('disconnected');
+        }
     }
 }
 

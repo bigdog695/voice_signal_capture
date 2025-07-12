@@ -97,6 +97,46 @@ body {
     color: #718096;
 }
 
+/* 功能按钮区域 */
+.feature-buttons {
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.feature-btn {
+    width: 100%;
+    padding: 14px 16px;
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.25);
+}
+
+.feature-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(59, 130, 246, 0.35);
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+}
+
+.feature-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.25);
+}
+
+.feature-btn svg {
+    flex-shrink: 0;
+}
+
 .status-indicator {
     width: 10px;
     height: 10px;
@@ -1296,4 +1336,133 @@ body {
     100% {
         opacity: 1;
     }
+}
+
+/* 本机通话监听窗口样式 */
+.local-monitor-display {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 16px;
+}
+
+.local-monitor-header {
+    padding: 20px 24px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+    border-radius: 16px 16px 0 0;
+}
+
+.local-monitor-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #0c4a6e;
+}
+
+.monitor-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.close-monitor-btn {
+    padding: 8px;
+    background: rgba(239, 68, 68, 0.1);
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    color: #dc2626;
+    transition: all 0.2s;
+}
+
+.close-monitor-btn:hover {
+    background: rgba(239, 68, 68, 0.2);
+    color: #b91c1c;
+}
+
+.monitor-content {
+    flex: 1;
+    overflow-y: auto;
+    background: linear-gradient(135deg, #fafafa 0%, #f5f5f5 100%);
+}
+
+.monitor-text-display {
+    padding: 24px;
+    height: 100%;
+}
+
+.monitor-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 100%;
+}
+
+.monitor-message {
+    background: white;
+    padding: 16px 20px;
+    border-radius: 12px;
+    border-left: 4px solid #3b82f6;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    transition: all 0.3s ease;
+    opacity: 0;
+    transform: translateY(20px);
+    animation: slideInMessage 0.4s ease forwards;
+}
+
+.monitor-message:hover {
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+    transform: translateY(-2px);
+}
+
+.monitor-message-text {
+    font-size: 14px;
+    line-height: 1.6;
+    color: #334155;
+    margin-bottom: 8px;
+}
+
+.monitor-message-time {
+    font-size: 12px;
+    color: #64748b;
+    font-weight: 500;
+}
+
+@keyframes slideInMessage {
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* 连接状态指示器变体 */
+#monitorConnectionIndicator {
+    background: rgba(59, 130, 246, 0.1);
+    color: #2563eb;
+    border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+#monitorConnectionIndicator.connected {
+    background: rgba(16, 185, 129, 0.1);
+    color: #059669;
+    border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+#monitorConnectionIndicator.connected::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #10b981;
+    margin-right: 6px;
+}
+
+#monitorConnectionIndicator.disconnected {
+    background: rgba(239, 68, 68, 0.1);
+    color: #dc2626;
+    border: 1px solid rgba(239, 68, 68, 0.2);
 }
