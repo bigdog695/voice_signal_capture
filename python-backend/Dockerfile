@@ -28,10 +28,6 @@ RUN pip install -r requirements.txt
 # Set ModelScope cache environment variable
 ENV MODELSCOPE_CACHE=/app/model_cache
 
-# Copy the model download script and pre-cache the ModelScope model
-COPY download_model.py .
-RUN python download_model.py
-
 # Copy the application code into the container
 COPY *.py ./
 
