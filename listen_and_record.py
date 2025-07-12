@@ -11,6 +11,7 @@ import sys
 import os
 import struct
 import re
+import audioop
 
 class RTPHeader:
     def __init__(self, data: bytes):
@@ -32,73 +33,41 @@ class RTPHeader:
         self.timestamp = struct.unpack('!I', data[4:8])[0]
         self.ssrc = struct.unpack('!I', data[8:12])[0]
 
-def ulaw2linear(u):
-    """
-    Convert a μ-law byte to 16-bit PCM sample.
-    Following ITU-T G.711 specification with proper scaling.
-    """
-    # Remove the sign bit and invert (u-law is stored inverted)
-    u = ~u & 0xFF
-    
-    # Extract sign, exponent, and mantissa
-    sign = (u & 0x80)
-    exponent = (u >> 4) & 0x07
-    mantissa = u & 0x0F
-    
-    # Convert to 16-bit linear
-    # Start with mantissa as magnitude
-    magnitude = mantissa + 16.0
-    # Apply exponent scaling
-    magnitude = magnitude * (2.0 ** exponent)
-    # Scale to 16-bit range (approximately -32768 to 32767)
-    magnitude = magnitude * 8.0
-    # Convert to integer
-    sample = int(magnitude)
-    # Apply sign
-    if sign:
-        sample = -sample
-    # Ensure we stay within 16-bit signed range
-    sample = max(-32768, min(32767, sample))
-    return sample
-
 def ulaw_to_pcm(ulaw_data: bytes) -> bytes:
     """
-    Convert μ-law encoded audio data to 16-bit PCM.
-    G.711 μ-law uses inverted bits and bias, following ITU-T G.711 specification.
+    Convert μ-law encoded audio data to 16-bit PCM using Python's audioop module.
+    This provides a more accurate conversion following the official G.711 specification.
     """
-    pcm_data = bytearray()
-    silence_count = 0
-    non_silence_count = 0
-    max_sample = float('-inf')
-    min_sample = float('inf')
-    
-    for byte in ulaw_data:
-        if byte == 0xFF:  # Silence in μ-law
-            silence_count += 1
-        else:
-            non_silence_count += 1
-            if non_silence_count <= 5:  # Print first few non-silence samples
-                print(f"Non-silence byte: {hex(byte)} ({byte})")
+    # Convert μ-law to 16-bit linear PCM
+    try:
+        pcm_data = audioop.ulaw2lin(ulaw_data, 2)  # 2 means 16-bit output
         
-        sample = ulaw2linear(byte)
-        max_sample = max(max_sample, sample)
-        min_sample = min(min_sample, sample)
-        pcm_data.extend(sample.to_bytes(2, byteorder='little', signed=True))
-    
-    total_samples = silence_count + non_silence_count
-    if total_samples > 0:
-        silence_percentage = (silence_count / total_samples) * 100
-        print(f"\nAudio analysis:")
-        print(f"  Total samples: {total_samples}")
-        print(f"  Silence samples: {silence_count} ({silence_percentage:.1f}%)")
-        print(f"  Non-silence samples: {non_silence_count} ({100-silence_percentage:.1f}%)")
-        print(f"  Sample value range: {min_sample} to {max_sample}")
-        if non_silence_count > 0:
-            print("  First few non-silence samples converted to PCM values:")
-            test_bytes = [b for b in ulaw_data if b != 0xFF][:5]
-            print("  ", [f"{b}({hex(b)}) -> {ulaw2linear(b)}" for b in test_bytes])
-    
-    return bytes(pcm_data)
+        # Analyze the conversion
+        silence_count = ulaw_data.count(0xFF)
+        non_silence_count = len(ulaw_data) - silence_count
+        
+        if len(ulaw_data) > 0:
+            silence_percentage = (silence_count / len(ulaw_data)) * 100
+            print(f"\nAudio analysis:")
+            print(f"  Total samples: {len(ulaw_data)}")
+            print(f"  Silence samples: {silence_count} ({silence_percentage:.1f}%)")
+            print(f"  Non-silence samples: {non_silence_count} ({100-silence_percentage:.1f}%)")
+            
+            # Show some non-silence samples if present
+            if non_silence_count > 0:
+                non_silence_bytes = [b for b in ulaw_data[:100] if b != 0xFF][:5]
+                if non_silence_bytes:
+                    print("  First few non-silence μ-law values:", [hex(b) for b in non_silence_bytes])
+                    # Show corresponding PCM values
+                    for b in non_silence_bytes:
+                        pcm_val = struct.unpack('<h', audioop.ulaw2lin(bytes([b]), 2))[0]
+                        print(f"    μ-law {hex(b)} -> PCM {pcm_val}")
+        
+        return pcm_data
+        
+    except Exception as e:
+        print(f"Error in ulaw_to_pcm conversion: {e}")
+        return bytes()
 
 def parse_sip_message(data: bytes) -> dict | None:
     """Parse SIP message and return key information"""
@@ -184,11 +153,45 @@ class RTPStream:
         self.expected_seq = None
         self.silence_packets = 0
         self.non_silence_packets = 0
+        self.packet_buffer = {}  # Buffer for out-of-order packets
+        self.last_processed_seq = None
+        self.discontinuities = 0
+        self.max_seq_gap = 0
 
     def add_packet(self, payload: bytes, seq: int, timestamp: int):
-        # Check for sequence number continuity
+        # Store packet in buffer
+        self.packet_buffer[seq] = (payload, timestamp)
+        
+        # Process packets in sequence
+        if self.last_processed_seq is None:
+            self.last_processed_seq = seq - 1
+        
+        # Process all sequential packets we have
+        next_seq = self.last_processed_seq + 1
+        while next_seq in self.packet_buffer:
+            payload, timestamp = self.packet_buffer.pop(next_seq)
+            self._process_packet(payload, next_seq, timestamp)
+            self.last_processed_seq = next_seq
+            next_seq += 1
+        
+        # Clean old packets from buffer (if gap is too large)
+        for old_seq in list(self.packet_buffer.keys()):
+            if old_seq < self.last_processed_seq - 100:  # Remove very old packets
+                del self.packet_buffer[old_seq]
+                self.discontinuities += 1
+
+    def _process_packet(self, payload: bytes, seq: int, timestamp: int):
+        """Process a single RTP packet in sequence."""
+        # Check for sequence discontinuity
         if self.expected_seq is not None and seq != self.expected_seq:
-            print(f"[WARN] Sequence discontinuity: expected {self.expected_seq}, got {seq}")
+            gap = (seq - self.expected_seq) & 0xFFFF
+            if gap > 0:
+                self.discontinuities += 1
+                self.max_seq_gap = max(self.max_seq_gap, gap)
+                # Add silence for missing packets to maintain timing
+                silence_payload = bytes([0xFF] * len(payload))
+                for _ in range(gap - 1):
+                    self.buffer.extend(silence_payload)
         
         # Update expected sequence number
         self.expected_seq = (seq + 1) & 0xFFFF
@@ -199,17 +202,17 @@ class RTPStream:
             self.silence_packets += 1
         else:
             self.non_silence_packets += 1
-            print(f"Non-silence packet received! First 5 bytes: {[hex(b) for b in payload[:5]]}")
         
-        # In G.711, each byte represents one sample
-        num_samples = len(payload)
-        self.samples_received += num_samples
+        # Add payload to buffer
         self.buffer.extend(payload)
+        self.samples_received += len(payload)
         self.packet_count += 1
-        self.last_seq = seq
+        
+        # Update timestamps
         if self.first_timestamp is None:
             self.first_timestamp = timestamp
         self.last_timestamp = timestamp
+        self.last_seq = seq
 
     def get_duration(self) -> float:
         """Get duration in seconds based on samples received"""
@@ -236,6 +239,9 @@ class RTPStream:
                 f"  Samples: {self.samples_received}\n"
                 f"  Silence packets: {self.silence_packets} ({silence_percent:.1f}%)\n"
                 f"  Non-silence packets: {self.non_silence_packets} ({100-silence_percent:.1f}%)\n"
+                f"  Discontinuities: {self.discontinuities}\n"
+                f"  Max sequence gap: {self.max_seq_gap}\n"
+                f"  Buffered packets: {len(self.packet_buffer)}\n"
                 f"  Sample rate check: {self.samples_received/duration:.1f} Hz" if duration > 0 else "N/A")
 
 def debug_wav_file(filename: str):

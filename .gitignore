@@ -48,3 +48,12 @@ Thumbs.db
 
 # Log files
 *.log
+
+# Model cache directories - ignore downloaded models
+model_cache/
+*/model_cache/
+python-backend/model_cache/
+
+# Voice segments output
+voice_segments/
+*/voice_segments/
