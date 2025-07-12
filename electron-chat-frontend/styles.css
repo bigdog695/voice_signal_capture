@@ -1466,3 +1466,95 @@ body {
     color: #dc2626;
     border: 1px solid rgba(239, 68, 68, 0.2);
 }
+
+/* 设置页面新样式 */
+.setting-hint {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+    color: #64748b;
+    line-height: 1.4;
+}
+
+.setting-checkbox {
+    width: auto !important;
+    margin-right: 8px;
+    accent-color: #3b82f6;
+}
+
+.connection-test {
+    margin: 20px 0;
+    padding: 16px;
+    background: rgba(249, 250, 251, 0.8);
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+}
+
+#testConnectionBtn {
+    margin-right: 12px;
+}
+
+.connection-status {
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.connection-status.success {
+    color: #059669;
+}
+
+.connection-status.error {
+    color: #dc2626;
+}
+
+.connection-status.testing {
+    color: #d97706;
+}
+
+.endpoint-preview {
+    margin-top: 20px;
+    padding: 16px;
+    background: rgba(248, 250, 252, 0.8);
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+}
+
+.endpoint-preview h4 {
+    margin-bottom: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #374151;
+}
+
+.endpoint-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.endpoint-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.8);
+    border-radius: 6px;
+    border: 1px solid #f1f5f9;
+}
+
+.endpoint-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: #64748b;
+    min-width: 80px;
+}
+
+.endpoint-url {
+    font-size: 12px;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    color: #3b82f6;
+    background: rgba(59, 130, 246, 0.1);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(59, 130, 246, 0.2);
+}

@@ -1,8 +1,62 @@
+// 配置管理类
+class ConfigManager {
+    constructor() {
+        this.defaultHost = 'localhost:8000';
+        this.defaultUseHttps = false;
+        this.loadConfig();
+    }
+
+    loadConfig() {
+        this.backendHost = localStorage.getItem('backendHost') || this.defaultHost;
+        this.useHttps = localStorage.getItem('useHttps') === 'true' || this.defaultUseHttps;
+    }
+
+    saveConfig(host, useHttps) {
+        this.backendHost = host;
+        this.useHttps = useHttps;
+        localStorage.setItem('backendHost', host);
+        localStorage.setItem('useHttps', useHttps.toString());
+    }
+
+    getProtocols() {
+        return {
+            http: this.useHttps ? 'https' : 'http',
+            ws: this.useHttps ? 'wss' : 'ws'
+        };
+    }
+
+    getChatUrl(chatId = 'test_001') {
+        const protocols = this.getProtocols();
+        return `${protocols.ws}://${this.backendHost}/chatting?id=${chatId}`;
+    }
+
+    getAsrUrl() {
+        const protocols = this.getProtocols();
+        return `${protocols.ws}://${this.backendHost}/ws`;
+    }
+
+    getListeningUrl() {
+        const protocols = this.getProtocols();
+        return `${protocols.ws}://${this.backendHost}/listening`;
+    }
+
+    getHealthUrl() {
+        const protocols = this.getProtocols();
+        return `${protocols.http}://${this.backendHost}/health`;
+    }
+
+    getApiBaseUrl() {
+        const protocols = this.getProtocols();
+        return `${protocols.http}://${this.backendHost}`;
+    }
+}
+
 // WebSocket连接管理
 class WebSocketManager {
-    constructor() {
+    constructor(configManager) {
+        this.configManager = configManager;
         this.ws = null;
-        this.url = localStorage.getItem('websocketUrl') || 'ws://localhost:8000/chatting?id=test_001';
+        this.url = this.configManager.getChatUrl();
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5;
         this.reconnectDelay = 1000;
@@ -108,21 +162,25 @@ class WebSocketManager {
         this.messageCallbacks.forEach(callback => callback(data));
     }
 
-    setUrl(url) {
-        this.url = url;
-        localStorage.setItem('websocketUrl', url);
+    setUrl(chatId = 'test_001') {
+        this.url = this.configManager.getChatUrl(chatId);
+    }
+
+    updateConfig() {
+        this.url = this.configManager.getChatUrl();
     }
 }
 
 // 通话展示管理器
 class CallDisplayManager {
     constructor() {
+        this.configManager = new ConfigManager();
         this.calls = [];
         this.currentCallId = null;
         this.isLiveCallActive = false;
         this.liveCallStartTime = null;
         this.liveCallTimer = null;
-        this.wsManager = new WebSocketManager();
+        this.wsManager = new WebSocketManager(this.configManager);
         
         // 本机监听相关
         this.monitorWs = null;
@@ -210,9 +268,18 @@ class CallDisplayManager {
             this.saveSettings();
         });
 
-        // 温度滑块
-        document.getElementById('temperature').addEventListener('input', (e) => {
-            document.getElementById('temperatureValue').textContent = e.target.value;
+        // 测试连接按钮
+        document.getElementById('testConnectionBtn').addEventListener('click', () => {
+            this.testConnection();
+        });
+
+        // 后端地址输入变化时更新预览
+        document.getElementById('backendHost').addEventListener('input', () => {
+            this.updateEndpointPreview();
+        });
+
+        document.getElementById('useHttps').addEventListener('change', () => {
+            this.updateEndpointPreview();
         });
 
         // 模态框背景点击关闭
@@ -523,11 +590,11 @@ class CallDisplayManager {
         const modal = document.getElementById('settingsModal');
         
         // 加载当前设置
-        document.getElementById('websocketUrl').value = this.wsManager.url;
-        document.getElementById('apiModel').value = localStorage.getItem('apiModel') || 'gpt-3.5-turbo';
-        document.getElementById('maxTokens').value = localStorage.getItem('maxTokens') || '2000';
-        document.getElementById('temperature').value = localStorage.getItem('temperature') || '0.7';
-        document.getElementById('temperatureValue').textContent = localStorage.getItem('temperature') || '0.7';
+        document.getElementById('backendHost').value = this.configManager.backendHost;
+        document.getElementById('useHttps').checked = this.configManager.useHttps;
+        
+        // 更新端点预览
+        this.updateEndpointPreview();
         
         modal.classList.add('show');
     }
@@ -538,24 +605,90 @@ class CallDisplayManager {
     }
 
     saveSettings() {
-        const url = document.getElementById('websocketUrl').value;
-        const model = document.getElementById('apiModel').value;
-        const maxTokens = document.getElementById('maxTokens').value;
-        const temperature = document.getElementById('temperature').value;
+        const host = document.getElementById('backendHost').value.trim();
+        const useHttps = document.getElementById('useHttps').checked;
 
-        // 保存设置
-        localStorage.setItem('apiModel', model);
-        localStorage.setItem('maxTokens', maxTokens);
-        localStorage.setItem('temperature', temperature);
+        if (!host) {
+            alert('请输入后端服务地址');
+            return;
+        }
 
-        // 如果WebSocket URL改变了，重新连接
-        if (url !== this.wsManager.url) {
+        // 保存配置
+        this.configManager.saveConfig(host, useHttps);
+        
+        // 更新WebSocket管理器
+        this.wsManager.updateConfig();
+        
+        // 如果当前有连接，断开并重新连接
+        if (this.wsManager.ws && this.wsManager.ws.readyState === WebSocket.OPEN) {
             this.wsManager.disconnect();
-            this.wsManager.setUrl(url);
-            this.wsManager.connect();
+            setTimeout(() => {
+                this.wsManager.connect();
+            }, 100);
+        }
+        
+        // 如果监听服务正在运行，重新连接
+        if (this.isMonitoring) {
+            this.disconnectLocalMonitor();
+            setTimeout(() => {
+                this.connectToLocalMonitor();
+            }, 100);
         }
 
         this.closeSettings();
+        alert('设置已保存！');
+    }
+
+    updateEndpointPreview() {
+        const host = document.getElementById('backendHost').value.trim() || 'localhost:8000';
+        const useHttps = document.getElementById('useHttps').checked;
+        
+        const protocols = {
+            http: useHttps ? 'https' : 'http',
+            ws: useHttps ? 'wss' : 'ws'
+        };
+
+        document.getElementById('chatEndpointPreview').textContent = `${protocols.ws}://${host}/chatting`;
+        document.getElementById('asrEndpointPreview').textContent = `${protocols.ws}://${host}/ws`;
+        document.getElementById('listeningEndpointPreview').textContent = `${protocols.ws}://${host}/listening`;
+        document.getElementById('healthEndpointPreview').textContent = `${protocols.http}://${host}/health`;
+    }
+
+    async testConnection() {
+        const host = document.getElementById('backendHost').value.trim();
+        const useHttps = document.getElementById('useHttps').checked;
+        const resultElement = document.getElementById('connectionTestResult');
+        
+        if (!host) {
+            resultElement.textContent = '请先输入后端服务地址';
+            resultElement.className = 'connection-status error';
+            return;
+        }
+
+        resultElement.textContent = '正在测试连接...';
+        resultElement.className = 'connection-status testing';
+
+        try {
+            const protocol = useHttps ? 'https' : 'http';
+            const healthUrl = `${protocol}://${host}/health`;
+            
+            const response = await fetch(healthUrl, {
+                method: 'GET',
+                timeout: 5000
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                resultElement.textContent = `连接成功！服务状态: ${data.status}`;
+                resultElement.className = 'connection-status success';
+            } else {
+                resultElement.textContent = `连接失败：HTTP ${response.status}`;
+                resultElement.className = 'connection-status error';
+            }
+        } catch (error) {
+            resultElement.textContent = `连接失败：${error.message}`;
+            resultElement.className = 'connection-status error';
+        }
     }
 
     loadSettings() {
@@ -591,8 +724,7 @@ class CallDisplayManager {
             this.mediaStreamSource = this.audioContext.createMediaStreamSource(stream);
             
             // --- WebSocket 连接 ---
-            const chatUrl = new URL(this.wsManager.url);
-            const asrUrl = `ws://${chatUrl.host}/ws`; // 使用 ws:// 协议
+            const asrUrl = this.configManager.getAsrUrl();
             console.log(`Connecting to ASR WebSocket: ${asrUrl}`);
             this.asrSocket = new WebSocket(asrUrl);
             this.setupAsrSocketListeners();
@@ -865,8 +997,7 @@ class CallDisplayManager {
         this.updateMonitorStatus('连接中...');
         
         try {
-            const chatUrl = new URL(this.wsManager.url);
-            const monitorUrl = `ws://${chatUrl.host}/listening`;
+            const monitorUrl = this.configManager.getListeningUrl();
             console.log('=== 连接本机监听服务 ===');
             console.log('监听URL:', monitorUrl);
             

@@ -190,36 +190,49 @@
     <div class="modal" id="settingsModal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>Settings</h3>
+                <h3>后端服务配置</h3>
                 <button class="close-btn" id="closeSettingsBtn">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="setting-group">
-                    <label for="websocketUrl">WebSocket Server URL:</label>
-                    <input type="text" id="websocketUrl" placeholder="ws://localhost:8000" value="ws://localhost:8000/chatting?id=test_001">
+                    <label for="backendHost">后端服务地址:</label>
+                    <input type="text" id="backendHost" placeholder="localhost:8000" value="localhost:8000">
+                    <small class="setting-hint">请输入后端服务的主机地址和端口，例如：localhost:8000 或 192.168.1.100:8000</small>
                 </div>
                 <div class="setting-group">
-                    <label for="apiModel">AI Model:</label>
-                    <select id="apiModel">
-                        <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                        <option value="gpt-4">GPT-4</option>
-                        <option value="claude">Claude</option>
-                        <option value="local">Local Model</option>
-                    </select>
+                    <label for="useHttps">使用 HTTPS/WSS:</label>
+                    <input type="checkbox" id="useHttps" class="setting-checkbox">
+                    <small class="setting-hint">勾选后将使用 HTTPS 和 WSS 协议连接后端</small>
                 </div>
-                <div class="setting-group">
-                    <label for="maxTokens">Max Tokens:</label>
-                    <input type="number" id="maxTokens" min="1" max="4000" value="2000">
+                <div class="connection-test">
+                    <button class="btn btn-secondary" id="testConnectionBtn">测试连接</button>
+                    <span id="connectionTestResult" class="connection-status"></span>
                 </div>
-                <div class="setting-group">
-                    <label for="temperature">Temperature:</label>
-                    <input type="range" id="temperature" min="0" max="2" step="0.1" value="0.7">
-                    <span id="temperatureValue">0.7</span>
+                <div class="endpoint-preview">
+                    <h4>连接端点预览:</h4>
+                    <div class="endpoint-list">
+                        <div class="endpoint-item">
+                            <span class="endpoint-label">聊天服务:</span>
+                            <span id="chatEndpointPreview" class="endpoint-url">ws://localhost:8000/chatting</span>
+                        </div>
+                        <div class="endpoint-item">
+                            <span class="endpoint-label">语音识别:</span>
+                            <span id="asrEndpointPreview" class="endpoint-url">ws://localhost:8000/ws</span>
+                        </div>
+                        <div class="endpoint-item">
+                            <span class="endpoint-label">本机监听:</span>
+                            <span id="listeningEndpointPreview" class="endpoint-url">ws://localhost:8000/listening</span>
+                        </div>
+                        <div class="endpoint-item">
+                            <span class="endpoint-label">健康检查:</span>
+                            <span id="healthEndpointPreview" class="endpoint-url">http://localhost:8000/health</span>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" id="cancelSettingsBtn">Cancel</button>
-                <button class="btn btn-primary" id="saveSettingsBtn">Save</button>
+                <button class="btn btn-secondary" id="cancelSettingsBtn">取消</button>
+                <button class="btn btn-primary" id="saveSettingsBtn">保存设置</button>
             </div>
         </div>
     </div>
