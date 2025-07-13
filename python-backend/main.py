@@ -801,7 +801,7 @@ def _resample_audio(audio_data, orig_sr, target_sr):
         log.error(f"音频重采样失败: {e}")
         return None
 
-async def _process_zmq_voice_data(websocket):
+async def _process_zmq_voice_data(websocket, connection_state):
     """处理ZMQ语音数据的异步函数"""
     # 初始化ZMQ订阅者
     context = zmq.Context()
@@ -817,9 +817,20 @@ async def _process_zmq_voice_data(websocket):
     log.info("ZMQ语音数据处理器已启动，监听端口5555")
     
     try:
-        while True:
+        while connection_state["is_alive"]:
             try:
+                # 检查任务是否被取消
+                if asyncio.current_task().cancelled():
+                    log.info("ZMQ处理任务收到取消信号")
+                    break
+                
+                # 检查共享连接状态，无需单独的心跳检测
+                if not connection_state["is_alive"]:
+                    log.info("检测到WebSocket连接已断开，退出ZMQ处理循环")
+                    break
+                
                 # 接收ZMQ消息
+                message = socket.recv_json(zmq.NOBLOCK)
                 message = socket.recv_json(zmq.NOBLOCK)
                 
                 if message["type"] == "voice_segment":
@@ -851,9 +862,18 @@ async def _process_zmq_voice_data(websocket):
                         text = _extract_asr_text(result)
                         if text and text != accumulated_text:
                             accumulated_text = text
-                            # 直接发送识别结果到前端
-                            await websocket.send_text(accumulated_text)
-                            log.info(f"ASR识别结果: '{text}'")
+                            # 发送识别结果到前端，检查连接状态
+                            if connection_state["is_alive"]:
+                                try:
+                                    await asyncio.wait_for(websocket.send_text(accumulated_text), timeout=1.0)
+                                    log.info(f"ASR识别结果: '{text}'")
+                                except (asyncio.TimeoutError, Exception) as e:
+                                    log.warning(f"发送ASR结果失败，WebSocket可能已断开: {e}")
+                                    connection_state["is_alive"] = False
+                                    break
+                            else:
+                                log.info("连接已断开，跳过发送ASR结果")
+                                break
                     
                     except Exception as e:
                         log.error(f"ASR识别失败: {e}")
@@ -872,34 +892,59 @@ async def _process_zmq_voice_data(websocket):
                                 decoder_chunk_look_back=DEC_LB
                             )
                             final_text = _extract_asr_text(result)
-                            if final_text:
-                                await websocket.send_text(final_text)
+                            final_result = final_text if final_text else accumulated_text
+                            if connection_state["is_alive"]:
+                                try:
+                                    await asyncio.wait_for(websocket.send_text(final_result), timeout=1.0)
+                                except (asyncio.TimeoutError, Exception) as e:
+                                    log.warning(f"发送最终结果失败: {e}")
+                                    connection_state["is_alive"] = False
                             else:
-                                await websocket.send_text(accumulated_text)
+                                log.info("连接已断开，跳过发送最终结果")
                         except Exception as e:
                             log.error(f"最终ASR识别失败: {e}")
-                            await websocket.send_text(accumulated_text)
+                            if connection_state["is_alive"]:
+                                try:
+                                    await asyncio.wait_for(websocket.send_text(accumulated_text), timeout=1.0)
+                                except:
+                                    connection_state["is_alive"] = False
                     else:
-                        await websocket.send_text("通话结束")
+                        if connection_state["is_alive"]:
+                            try:
+                                await asyncio.wait_for(websocket.send_text("通话结束"), timeout=1.0)
+                            except:
+                                connection_state["is_alive"] = False
                     
                     # 重置状态
                     cache.clear()
                     accumulated_text = ""
             
             except zmq.error.Again:
-                # 超时，没有新消息
-                await asyncio.sleep(0.01)  # 释放控制权
+                # 超时，没有新消息 - 释放控制权并继续
+                await asyncio.sleep(0.01)
                 continue
             except zmq.error.ZMQError as e:
                 log.error(f"ZMQ错误: {e}")
                 await asyncio.sleep(0.1)
+                # ZMQ连接问题，可能需要退出
+                if "Connection refused" in str(e) or "No such device" in str(e):
+                    log.error("ZMQ连接失败，退出处理循环")
+                    break
                 continue
+            except asyncio.CancelledError:
+                log.info("ZMQ处理任务被取消")
+                break
                 
+    except asyncio.CancelledError:
+        log.info("ZMQ处理任务被取消")
     except Exception as e:
         log.error(f"ZMQ语音数据处理异常: {e}")
     finally:
-        socket.close()
-        context.term()
+        try:
+            socket.close()
+            context.term()
+        except Exception as e:
+            log.error(f"关闭ZMQ连接时出错: {e}")
         log.info("ZMQ语音数据处理器已关闭")
 
 @app.websocket("/listening")
@@ -908,15 +953,23 @@ async def websocket_listening_endpoint(websocket: WebSocket):
     await websocket.accept()
     log.info("本机监听客户端已连接")
     
+    # 创建共享的连接状态对象
+    connection_state = {
+        "is_alive": True,
+        "connected_at": time.time()
+    }
+    
+    zmq_task = None
+    
     try:
         # 发送连接确认
         await websocket.send_text("监听服务已连接，正在等待通话数据...")
         
-        # 启动ZMQ语音数据处理任务
-        zmq_task = asyncio.create_task(_process_zmq_voice_data(websocket))
+        # 启动ZMQ语音数据处理任务，传入共享状态
+        zmq_task = asyncio.create_task(_process_zmq_voice_data(websocket, connection_state))
         
         # 监听客户端消息
-        while True:
+        while connection_state["is_alive"]:
             try:
                 # 设置短超时，避免阻塞ZMQ处理
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
@@ -930,31 +983,63 @@ async def websocket_listening_endpoint(websocket: WebSocket):
                     }))
                 elif message_data.get("type") == "stop_listening":
                     # 停止监听
-                    zmq_task.cancel()
+                    connection_state["is_alive"] = False
+                    if zmq_task and not zmq_task.done():
+                        zmq_task.cancel()
                     await websocket.send_text("监听服务已停止")
                     break
                     
             except asyncio.TimeoutError:
                 # 超时是正常的，继续循环
+                # 检查ZMQ任务是否还在运行
+                if zmq_task and zmq_task.done():
+                    # ZMQ任务已结束，检查是否有异常
+                    try:
+                        await zmq_task  # 获取可能的异常
+                    except asyncio.CancelledError:
+                        log.info("ZMQ任务已被取消")
+                    except Exception as e:
+                        log.error(f"ZMQ任务异常结束: {e}")
+                    # ZMQ任务结束，退出监听循环
+                    connection_state["is_alive"] = False
+                    break
                 continue
             except json.JSONDecodeError:
                 # 如果不是JSON消息，忽略
                 continue
+            except WebSocketDisconnect:
+                # WebSocket断开，立即通知ZMQ任务
+                log.info("监听WebSocket连接断开")
+                connection_state["is_alive"] = False
+                break
                 
     except WebSocketDisconnect:
         log.info("监听客户端断开连接")
+        connection_state["is_alive"] = False
     except Exception as e:
         log.error(f"监听WebSocket错误: {e}")
-        await websocket.close(code=1011, reason="Listening service error")
+        connection_state["is_alive"] = False
+        try:
+            await websocket.close(code=1011, reason="Listening service error")
+        except Exception as close_e:
+            log.error(f"关闭WebSocket时出错: {close_e}")
     finally:
+        # 确保连接状态被标记为断开
+        connection_state["is_alive"] = False
+        
         # 确保ZMQ任务被取消
-        if 'zmq_task' in locals() and not zmq_task.done():
+        if zmq_task and not zmq_task.done():
+            log.info("正在取消ZMQ处理任务...")
             zmq_task.cancel()
             try:
-                await zmq_task
-            except asyncio.CancelledError:
-                pass
-        log.info("监听服务已关闭")
+                await asyncio.wait_for(zmq_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                log.info("ZMQ任务已取消")
+            except Exception as e:
+                log.error(f"取消ZMQ任务时出错: {e}")
+        
+        connection_duration = time.time() - connection_state["connected_at"]
+        log.info(f"监听服务已关闭，连接时长: {connection_duration:.2f}s")
 
 if __name__ == "__main__":
     log.info("========================================")
