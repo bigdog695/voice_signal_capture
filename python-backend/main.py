@@ -905,7 +905,7 @@ async def _process_zmq_voice_data(websocket, connection_state):
                                     try:
                                         # 发送带有消息ID的文本
                                         message_data = {
-                                            "type": "asr_result",
+                                            "type": "listening_text",
                                             "messageId": current_message_id,
                                             "text": send_text,
                                             "timestamp": datetime.now().isoformat(),
