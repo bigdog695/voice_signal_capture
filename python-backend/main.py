@@ -912,6 +912,7 @@ async def _process_zmq_voice_data(websocket, connection_state):
                                             "chunk_number": chunk_counter
                                         }
                                         await asyncio.wait_for(websocket.send_text(json.dumps(message_data)), timeout=1.0)
+                                        log.info(f"发送结构体: {json.dumps(message_data)})")
                                         last_sent_text = text
                                         log.info(f"ASR识别结果: '{text}' (块#{chunk_counter}, 消息ID: {current_message_id})")
                                     except (asyncio.TimeoutError, Exception) as e:
