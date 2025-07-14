@@ -819,7 +819,8 @@ async def _process_zmq_voice_data(websocket, connection_state):
     # 滑动窗口参数
     max_cache_chunks = 100  # 最大缓存音频块数
     chunk_counter = 0  # 音频块计数器
-    cache_reset_interval = 50  # 每50个块重置一次缓存
+    cache_reset_interval = 5  # 每5个块重置一次缓存 (降低间隔)
+    last_message_reset = 0  # 上次重置消息ID的块计数
     
     log.info("ZMQ语音数据处理器已启动，监听端口5555")
     
@@ -838,7 +839,6 @@ async def _process_zmq_voice_data(websocket, connection_state):
                 
                 # 接收ZMQ消息
                 message = socket.recv_json(zmq.NOBLOCK)
-                message = socket.recv_json(zmq.NOBLOCK)
                 
                 if message["type"] == "voice_segment":
                     log.debug(f"收到语音段: 呼叫ID={message['call_id']}, 序列={message['sequence']}, 数据大小={len(message['data'])//2}字节")
@@ -846,7 +846,9 @@ async def _process_zmq_voice_data(websocket, connection_state):
                     chunk_counter += 1
                     
                     # 定期重置缓存以防止内存泄漏
-                    if chunk_counter % cache_reset_interval == 0:
+                    should_reset_cache = chunk_counter % cache_reset_interval == 0
+                    
+                    if should_reset_cache:
                         log.info(f"重置ASR缓存 (处理了 {chunk_counter} 个音频块)")
                         # 保留最近的识别结果作为上下文
                         if current_full_text:
@@ -857,7 +859,8 @@ async def _process_zmq_voice_data(websocket, connection_state):
                         cache.clear()
                         # 生成新的消息ID，表示开始新的语音句子
                         current_message_id = str(uuid.uuid4())
-                        log.info(f"生成新消息ID: {current_message_id}")
+                        last_message_reset = chunk_counter
+                        log.info(f"生成新消息ID: {current_message_id} (重置间隔: {chunk_counter - last_message_reset})")
                         last_sent_text = ""  # 重置已发送文本
                     
                     # 解码WAV文件数据并提取音频采样
@@ -912,9 +915,9 @@ async def _process_zmq_voice_data(websocket, connection_state):
                                             "chunk_number": chunk_counter
                                         }
                                         await asyncio.wait_for(websocket.send_text(json.dumps(message_data)), timeout=1.0)
-                                        log.info(f"发送结构体: {json.dumps(message_data)})")
+                                        log.info(f"发送ASR结果 - 块#{chunk_counter}, 消息ID: {current_message_id}, 文本: '{send_text}'")
                                         last_sent_text = text
-                                        log.info(f"ASR识别结果: '{text}' (块#{chunk_counter}, 消息ID: {current_message_id})")
+                                        log.debug(f"发送结构体: {json.dumps(message_data)}")
                                     except (asyncio.TimeoutError, Exception) as e:
                                         log.warning(f"发送ASR结果失败，WebSocket可能已断开: {e}")
                                         connection_state["is_alive"] = False
@@ -932,6 +935,7 @@ async def _process_zmq_voice_data(websocket, connection_state):
                             cache.clear()
                             current_message_id = str(uuid.uuid4())  # 生成新消息ID
                             log.info(f"错误重置后生成新消息ID: {current_message_id}")
+                            last_message_reset = chunk_counter
                             chunk_counter = 0
                             last_sent_text = ""
                 
@@ -977,8 +981,10 @@ async def _process_zmq_voice_data(websocket, connection_state):
                     cache.clear()
                     last_sent_text = ""
                     current_full_text = ""
+                    current_message_id = str(uuid.uuid4())  # 为下一次通话生成新的消息ID
                     chunk_counter = 0
-                    log.info("通话结束，已重置所有ASR状态")
+                    last_message_reset = 0
+                    log.info(f"通话结束，已重置所有ASR状态，新消息ID: {current_message_id}")
             
             except zmq.error.Again:
                 # 超时，没有新消息 - 释放控制权并继续
