@@ -812,7 +812,14 @@ async def _process_zmq_voice_data(websocket, connection_state):
     
     # 初始化ASR状态
     cache: dict = {}
-    accumulated_text = ""
+    last_sent_text = ""  # 上次发送的文本
+    current_full_text = ""  # 当前完整文本
+    current_message_id = str(uuid.uuid4())  # 当前消息ID
+    
+    # 滑动窗口参数
+    max_cache_chunks = 100  # 最大缓存音频块数
+    chunk_counter = 0  # 音频块计数器
+    cache_reset_interval = 50  # 每50个块重置一次缓存
     
     log.info("ZMQ语音数据处理器已启动，监听端口5555")
     
@@ -835,6 +842,23 @@ async def _process_zmq_voice_data(websocket, connection_state):
                 
                 if message["type"] == "voice_segment":
                     log.debug(f"收到语音段: 呼叫ID={message['call_id']}, 序列={message['sequence']}, 数据大小={len(message['data'])//2}字节")
+                    
+                    chunk_counter += 1
+                    
+                    # 定期重置缓存以防止内存泄漏
+                    if chunk_counter % cache_reset_interval == 0:
+                        log.info(f"重置ASR缓存 (处理了 {chunk_counter} 个音频块)")
+                        # 保留最近的识别结果作为上下文
+                        if current_full_text:
+                            # 只保留最近的部分文本作为上下文
+                            words = current_full_text.split()
+                            if len(words) > 50:  # 只保留最近50个词
+                                current_full_text = " ".join(words[-50:])
+                        cache.clear()
+                        # 生成新的消息ID，表示开始新的语音句子
+                        current_message_id = str(uuid.uuid4())
+                        log.info(f"生成新消息ID: {current_message_id}")
+                        last_sent_text = ""  # 重置已发送文本
                     
                     # 解码WAV文件数据并提取音频采样
                     audio_data, orig_sr = _decode_audio_data(message['data'])
@@ -860,28 +884,60 @@ async def _process_zmq_voice_data(websocket, connection_state):
                         
                         # 提取识别文本
                         text = _extract_asr_text(result)
-                        if text and text != accumulated_text:
-                            accumulated_text = text
-                            # 发送识别结果到前端，检查连接状态
-                            if connection_state["is_alive"]:
-                                try:
-                                    await asyncio.wait_for(websocket.send_text(accumulated_text), timeout=1.0)
-                                    log.info(f"ASR识别结果: '{text}'")
-                                except (asyncio.TimeoutError, Exception) as e:
-                                    log.warning(f"发送ASR结果失败，WebSocket可能已断开: {e}")
-                                    connection_state["is_alive"] = False
-                                    break
+                        if text:
+                            current_full_text = text
+                            
+                            # 只发送新增的文本部分
+                            if text != last_sent_text:
+                                # 计算新增的文本
+                                if last_sent_text and text.startswith(last_sent_text):
+                                    # 提取新增部分
+                                    new_text = text[len(last_sent_text):].strip()
+                                    if new_text:
+                                        send_text = text  # 发送完整文本，让前端处理增量显示
+                                    else:
+                                        send_text = None  # 没有新内容
+                                else:
+                                    # 文本完全不同，发送完整文本
+                                    send_text = text
+                                
+                                if send_text and connection_state["is_alive"]:
+                                    try:
+                                        # 发送带有消息ID的文本
+                                        message_data = {
+                                            "type": "asr_result",
+                                            "messageId": current_message_id,
+                                            "text": send_text,
+                                            "timestamp": datetime.now().isoformat(),
+                                            "chunk_number": chunk_counter
+                                        }
+                                        await asyncio.wait_for(websocket.send_text(json.dumps(message_data)), timeout=1.0)
+                                        last_sent_text = text
+                                        log.info(f"ASR识别结果: '{text}' (块#{chunk_counter}, 消息ID: {current_message_id})")
+                                    except (asyncio.TimeoutError, Exception) as e:
+                                        log.warning(f"发送ASR结果失败，WebSocket可能已断开: {e}")
+                                        connection_state["is_alive"] = False
+                                        break
+                                else:
+                                    log.debug(f"无新内容或连接已断开 (块#{chunk_counter})")
                             else:
-                                log.info("连接已断开，跳过发送ASR结果")
-                                break
+                                log.debug(f"文本无变化，跳过发送 (块#{chunk_counter})")
                     
                     except Exception as e:
-                        log.error(f"ASR识别失败: {e}")
+                        log.error(f"ASR识别失败 (块#{chunk_counter}): {e}")
+                        # ASR失败时考虑重置缓存
+                        if "memory" in str(e).lower() or "timeout" in str(e).lower():
+                            log.warning("检测到内存或超时错误，重置ASR缓存")
+                            cache.clear()
+                            current_message_id = str(uuid.uuid4())  # 生成新消息ID
+                            log.info(f"错误重置后生成新消息ID: {current_message_id}")
+                            chunk_counter = 0
+                            last_sent_text = ""
                 
                 elif message["type"] == "call_end":
                     log.info(f"通话结束: 呼叫ID={message['call_id']}")
                     # 发送最终结果
-                    if accumulated_text:
+                    if current_full_text:
                         try:
                             # 最终识别
                             result = inference_pipeline(
@@ -892,10 +948,11 @@ async def _process_zmq_voice_data(websocket, connection_state):
                                 decoder_chunk_look_back=DEC_LB
                             )
                             final_text = _extract_asr_text(result)
-                            final_result = final_text if final_text else accumulated_text
+                            final_result = final_text if final_text else current_full_text
                             if connection_state["is_alive"]:
                                 try:
-                                    await asyncio.wait_for(websocket.send_text(final_result), timeout=1.0)
+                                    await asyncio.wait_for(websocket.send_text(f"[通话结束] {final_result}"), timeout=1.0)
+                                    log.info(f"发送最终识别结果: 总块数={chunk_counter}, 最终文本='{final_result}'")
                                 except (asyncio.TimeoutError, Exception) as e:
                                     log.warning(f"发送最终结果失败: {e}")
                                     connection_state["is_alive"] = False
@@ -905,19 +962,22 @@ async def _process_zmq_voice_data(websocket, connection_state):
                             log.error(f"最终ASR识别失败: {e}")
                             if connection_state["is_alive"]:
                                 try:
-                                    await asyncio.wait_for(websocket.send_text(accumulated_text), timeout=1.0)
+                                    await asyncio.wait_for(websocket.send_text(f"[通话结束] {current_full_text}"), timeout=1.0)
                                 except:
                                     connection_state["is_alive"] = False
                     else:
                         if connection_state["is_alive"]:
                             try:
-                                await asyncio.wait_for(websocket.send_text("通话结束"), timeout=1.0)
+                                await asyncio.wait_for(websocket.send_text("[通话结束] 无识别内容"), timeout=1.0)
                             except:
                                 connection_state["is_alive"] = False
                     
-                    # 重置状态
+                    # 重置所有状态
                     cache.clear()
-                    accumulated_text = ""
+                    last_sent_text = ""
+                    current_full_text = ""
+                    chunk_counter = 0
+                    log.info("通话结束，已重置所有ASR状态")
             
             except zmq.error.Again:
                 # 超时，没有新消息 - 释放控制权并继续
