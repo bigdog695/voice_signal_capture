@@ -19,7 +19,7 @@ import wave
 # ASR相关配置
 MODEL_NAME: str = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
 MODEL_REV: str = "v2.0.4"
-DEVICE: str = "cpu"
+DEVICE: str = "cuda"  # 改为使用GPU
 
 # 音频参数配置
 CHUNK_SIZE = [0, 10, 5]  # 600ms frame
@@ -76,8 +76,18 @@ try:
     log.info(f"加载ASR模型 '{MODEL_NAME}' ...")
     
     import os
+    import torch
     from modelscope.pipelines import pipeline
     from modelscope.utils.constant import Tasks
+    
+    # 检查GPU是否可用
+    if not torch.cuda.is_available():
+        log.warning("GPU不可用，回退到CPU推理")
+        DEVICE = "cpu"
+    else:
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # Convert to GB
+        log.info(f"使用GPU: {gpu_name} (内存: {gpu_memory:.1f}GB)")
     
     # 设置模型缓存目录
     os.environ["MODELSCOPE_CACHE"] = "./model_cache"
@@ -87,13 +97,14 @@ try:
         task=Tasks.auto_speech_recognition,
         model=MODEL_NAME,
         model_revision=MODEL_REV,
+        device=DEVICE,  # 指定设备
         cache_dir=os.environ.get("MODELSCOPE_CACHE", "./model_cache")
     )
     
-    log.info("ASR模型加载成功")
+    log.info(f"ASR模型加载成功，使用设备: {DEVICE}")
 except ImportError as e:
-    log.error("ModelScope未正确安装")
-    raise RuntimeError("ModelScope依赖缺失") from e
+    log.error("ModelScope或PyTorch未正确安装")
+    raise RuntimeError("ModelScope或PyTorch依赖缺失") from e
 except Exception as exc:
     log.error(f"ASR模型加载失败: {exc}")
     raise RuntimeError(f"ASR模型加载失败: {exc}") from exc
@@ -313,28 +324,7 @@ async def chatting_websocket(websocket: WebSocket, id: str):
         "timestamp": datetime.now().isoformat()
     }))
     
-    # 发送一些模拟的历史消息
-    mock_messages = [
-        {"speaker": "user", "content": "你好，我想反映一个冰箱维修的问题。"},
-        {"speaker": "assistant", "content": "您好！我是客服人员，很高兴为您服务。请详细描述一下具体情况。"},
-        {"speaker": "user", "content": "我在2020年购买的冰箱现在出现故障，商家不予维修。"},
-        {"speaker": "assistant", "content": "这种情况确实需要核查。请提供商家的详细信息，我们会尽快处理。"}
-    ]
-    
-    for i, msg in enumerate(mock_messages):
-        await websocket.send_text(json.dumps({
-            "type": "message_history",
-            "chat_id": id,
-            "message_id": f"mock_msg_{i+1}",
-            "speaker": msg["speaker"],
-            "content": msg["content"],
-            "timestamp": datetime.now().isoformat()
-        }))
-    
     try:
-        # 启动定期发送模拟消息的任务
-        asyncio.create_task(simulate_conversation(websocket, id))
-        
         # 监听客户端消息
         while True:
             data = await websocket.receive_text()
@@ -364,220 +354,6 @@ async def chatting_websocket(websocket: WebSocket, id: str):
         # 清理连接
         if id in active_connections:
             del active_connections[id]
-
-async def simulate_conversation(websocket: WebSocket, chat_id: str):
-    """
-    模拟实时语音识别对话，快速密集推送消息 - 客服投诉场景
-    """
-    try:
-        # 模拟实时语音识别 - 客服投诉场景
-        conversation_segments = [
-            # 第一阶段：问候和开场 - 用户第一句话
-            {"speaker": "user", "content": "你", "delay": 0.3, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好", "delay": 0.2, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，", "delay": 0.15, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我", "delay": 0.2, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我想", "delay": 0.3, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我想投", "delay": 0.2, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我想投诉", "delay": 0.25, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我想投诉一个", "delay": 0.3, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我想投诉一个电器", "delay": 0.2, "message_group": "user_msg_1"},
-            {"speaker": "user", "content": "你好，我想投诉一个电器商家", "delay": 0.4, "message_group": "user_msg_1"},
-            
-            # 客服回复
-            {"speaker": "assistant", "content": "您", "delay": 0.6, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好", "delay": 0.2, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！", "delay": 0.15, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我", "delay": 0.2, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我是", "delay": 0.2, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我是客服", "delay": 0.25, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我是客服人员", "delay": 0.2, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我是客服人员，请", "delay": 0.2, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我是客服人员，请详细", "delay": 0.3, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我是客服人员，请详细说明", "delay": 0.2, "message_group": "assistant_msg_1"},
-            {"speaker": "assistant", "content": "您好！我是客服人员，请详细说明您的投诉情况", "delay": 0.4, "message_group": "assistant_msg_1"},
-            
-            # 第二阶段：详细描述问题 - 用户第二句话
-            {"speaker": "user", "content": "我", "delay": 0.8, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在", "delay": 0.2, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在2020年", "delay": 0.2, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在2020年在", "delay": 0.2, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在2020年在六安", "delay": 0.2, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在2020年在六安索伊", "delay": 0.25, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在2020年在六安索伊电器", "delay": 0.2, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在2020年在六安索伊电器制造", "delay": 0.3, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在2020年在六安索伊电器制造有限公司", "delay": 0.4, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在2020年在六安索伊电器制造有限公司买了", "delay": 0.3, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在2020年在六安索伊电器制造有限公司买了一台", "delay": 0.25, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在2020年在六安索伊电器制造有限公司买了一台双开门", "delay": 0.3, "message_group": "user_msg_2"},
-            {"speaker": "user", "content": "我在2020年在六安索伊电器制造有限公司买了一台双开门冰箱", "delay": 0.4, "message_group": "user_msg_2"},
-            
-            # 客服第二次回复
-            {"speaker": "assistant", "content": "好", "delay": 0.5, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的", "delay": 0.15, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的，我", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的，我记录", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的，我记录一下", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的，我记录一下您的", "delay": 0.25, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的，我记录一下您的情况", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问冰箱", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问冰箱现在", "delay": 0.25, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问冰箱现在出现", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问冰箱现在出现什么", "delay": 0.2, "message_group": "assistant_msg_2"},
-            {"speaker": "assistant", "content": "好的，我记录一下您的情况。请问冰箱现在出现什么问题", "delay": 0.4, "message_group": "assistant_msg_2"},
-            
-            # 第三阶段：具体问题描述 - 用户第三句话
-            {"speaker": "user", "content": "冰", "delay": 0.7, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱", "delay": 0.2, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱现在", "delay": 0.2, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱现在完全", "delay": 0.2, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱现在完全不", "delay": 0.2, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱现在完全不制冷", "delay": 0.25, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱现在完全不制冷了", "delay": 0.2, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了", "delay": 0.3, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了2850元", "delay": 0.4, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了2850元买的", "delay": 0.3, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了2850元买的，说是", "delay": 0.25, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了2850元买的，说是保修", "delay": 0.3, "message_group": "user_msg_3"},
-            {"speaker": "user", "content": "冰箱现在完全不制冷了，花了2850元买的，说是保修6年", "delay": 0.4, "message_group": "user_msg_3"},
-            
-            # 客服第三次回复
-            {"speaker": "assistant", "content": "明", "delay": 0.6, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白了", "delay": 0.15, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白了，那", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白了，那现在", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白了，那现在还在", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白了，那现在还在保修期", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白了，那现在还在保修期内", "delay": 0.25, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白了，那现在还在保修期内。您有", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白了，那现在还在保修期内。您有联系", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白了，那现在还在保修期内。您有联系过", "delay": 0.2, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白了，那现在还在保修期内。您有联系过商家", "delay": 0.25, "message_group": "assistant_msg_3"},
-            {"speaker": "assistant", "content": "明白了，那现在还在保修期内。您有联系过商家维修吗", "delay": 0.4, "message_group": "assistant_msg_3"},
-            
-            # 第四阶段：投诉重点 - 用户第四句话
-            {"speaker": "user", "content": "联", "delay": 0.8, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系", "delay": 0.2, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过", "delay": 0.2, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过了", "delay": 0.2, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过了，但是", "delay": 0.25, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过了，但是他们", "delay": 0.2, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过了，但是他们一直", "delay": 0.3, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过了，但是他们一直拖延", "delay": 0.2, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来", "delay": 0.3, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来维修", "delay": 0.4, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来维修，而且", "delay": 0.3, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来维修，而且态度", "delay": 0.25, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来维修，而且态度特别", "delay": 0.3, "message_group": "user_msg_4"},
-            {"speaker": "user", "content": "联系过了，但是他们一直拖延不来维修，而且态度特别恶劣", "delay": 0.4, "message_group": "user_msg_4"},
-            
-            # 客服第四次回复
-            {"speaker": "assistant", "content": "这", "delay": 0.5, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种", "delay": 0.15, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生", "delay": 0.25, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即", "delay": 0.25, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查", "delay": 0.25, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查此事", "delay": 0.3, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查此事，督促", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查此事，督促商家", "delay": 0.2, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查此事，督促商家尽快", "delay": 0.25, "message_group": "assistant_msg_4"},
-            {"speaker": "assistant", "content": "这种情况确实不应该发生。我会立即联系相关部门核查此事，督促商家尽快维修", "delay": 0.4, "message_group": "assistant_msg_4"},
-        ]
-        
-        # 快速推送所有消息段
-        for segment in conversation_segments:
-            await asyncio.sleep(segment["delay"])
-            
-            # 使用message_group作为message_id，确保同一组消息使用相同ID
-            message_id = segment["message_group"]
-            
-            # 发送消息段
-            await websocket.send_text(json.dumps({
-                "type": "new_message",
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "speaker": segment["speaker"],
-                "content": segment["content"],
-                "timestamp": datetime.now().isoformat(),
-                "is_partial": True  # 大部分消息都是部分消息
-            }))
-            
-            print(f"客服实时推送: {segment['speaker']} - {segment['content']}")
-        
-        # 继续循环推送更多实时内容
-        await asyncio.sleep(1)
-        
-        # 第二轮：详细信息确认
-        followup_segments = [
-            {"speaker": "user", "content": "那", "delay": 0.8, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "那公司", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "那公司地址", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "那公司地址是", "delay": 0.25, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "那公司地址是在", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "那公司地址是在六安市", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "那公司地址是在六安市经济", "delay": 0.25, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "那公司地址是在六安市经济技术", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "那公司地址是在六安市经济技术开发区", "delay": 0.3, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "那公司地址是在六安市经济技术开发区皋城路", "delay": 0.2, "message_group": "user_msg_5"},
-            {"speaker": "user", "content": "那公司地址是在六安市经济技术开发区皋城路364号", "delay": 0.3, "message_group": "user_msg_5"},
-            
-            {"speaker": "assistant", "content": "好", "delay": 0.6, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的", "delay": 0.15, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录了", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录了详细", "delay": 0.25, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录了详细地址", "delay": 0.3, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时内", "delay": 0.25, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时内给您", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时内给您回复", "delay": 0.3, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时内给您回复处理", "delay": 0.2, "message_group": "assistant_msg_5"},
-            {"speaker": "assistant", "content": "好的，我已经记录了详细地址。我们会在48小时内给您回复处理结果", "delay": 0.4, "message_group": "assistant_msg_5"},
-        ]
-        
-        # 快速推送后续对话
-        for segment in followup_segments:
-            await asyncio.sleep(segment["delay"])
-            
-            message_id = segment["message_group"]
-            await websocket.send_text(json.dumps({
-                "type": "new_message",
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "speaker": segment["speaker"],
-                "content": segment["content"],
-                "timestamp": datetime.now().isoformat(),
-                "is_partial": True
-            }))
-            
-            print(f"详细确认: {segment['speaker']} - {segment['content']}")
-        
-        # 发送对话结束标记
-        await asyncio.sleep(1)
-        await websocket.send_text(json.dumps({
-            "type": "conversation_complete",
-            "chat_id": chat_id,
-            "message": "客服投诉处理演示完成",
-            "timestamp": datetime.now().isoformat()
-        }))
-        
-    except Exception as e:
-        print(f"模拟对话错误: {e}")
 
 # ASR WebSocket端点 - 只使用真实FunASR
 @app.websocket("/ws")
@@ -806,23 +582,19 @@ async def _process_zmq_voice_data(websocket, connection_state):
     # 初始化ZMQ订阅者
     context = zmq.Context()
     socket = context.socket(zmq.SUB)
-    socket.connect("tcp://localhost:5555")
+    
+    # 添加更详细的连接日志
+    zmq_url = "tcp://localhost:5555"
+    log.info(f"正在连接ZMQ服务器: {zmq_url}")
+    socket.connect(zmq_url)
+    
+    # 设置订阅
     socket.setsockopt_string(zmq.SUBSCRIBE, "")  # 订阅所有消息
-    socket.RCVTIMEO = 100  # 100ms超时
+    socket.RCVTIMEO = 1000  # 1000ms超时
     
     # 初始化ASR状态
-    cache: dict = {}
-    last_sent_text = ""  # 上次发送的文本
-    current_full_text = ""  # 当前完整文本
-    current_message_id = str(uuid.uuid4())  # 当前消息ID
-    
-    # 滑动窗口参数
-    max_cache_chunks = 100  # 最大缓存音频块数
     chunk_counter = 0  # 音频块计数器
-    cache_reset_interval = 5  # 每5个块重置一次缓存 (降低间隔)
-    last_message_reset = 0  # 上次重置消息ID的块计数
-    
-    log.info("ZMQ语音数据处理器已启动，监听端口5555")
+    last_sequence = -1  # 记录上一个语音段的序列号
     
     try:
         while connection_state["is_alive"]:
@@ -832,167 +604,91 @@ async def _process_zmq_voice_data(websocket, connection_state):
                     log.info("ZMQ处理任务收到取消信号")
                     break
                 
-                # 检查共享连接状态，无需单独的心跳检测
+                # 检查共享连接状态
                 if not connection_state["is_alive"]:
                     log.info("检测到WebSocket连接已断开，退出ZMQ处理循环")
                     break
                 
                 # 接收ZMQ消息
-                message = socket.recv_json(zmq.NOBLOCK)
+                message = socket.recv_json()
                 
                 if message["type"] == "voice_segment":
-                    log.debug(f"收到语音段: 呼叫ID={message['call_id']}, 序列={message['sequence']}, 数据大小={len(message['data'])//2}字节")
-                    
                     chunk_counter += 1
+                    current_sequence = message['sequence']
+                    log.info(f"收到语音段: 呼叫ID={message['call_id']}, 序列={current_sequence}, 数据大小={len(message['data'])//2}字节")
                     
-                    # 定期重置缓存以防止内存泄漏
-                    should_reset_cache = chunk_counter % cache_reset_interval == 0
-                    
-                    if should_reset_cache:
-                        log.info(f"重置ASR缓存 (处理了 {chunk_counter} 个音频块)")
-                        # 保留最近的识别结果作为上下文
-                        if current_full_text:
-                            # 只保留最近的部分文本作为上下文
-                            words = current_full_text.split()
-                            if len(words) > 50:  # 只保留最近50个词
-                                current_full_text = " ".join(words[-50:])
-                        cache.clear()
-                        # 生成新的消息ID，表示开始新的语音句子
-                        current_message_id = str(uuid.uuid4())
-                        last_message_reset = chunk_counter
-                        log.info(f"生成新消息ID: {current_message_id} (重置间隔: {chunk_counter - last_message_reset})")
-                        last_sent_text = ""  # 重置已发送文本
+                    # 每个语音段使用新的缓存，确保独立处理
+                    cache = {}
                     
                     # 解码WAV文件数据并提取音频采样
                     audio_data, orig_sr = _decode_audio_data(message['data'])
                     if audio_data is None:
                         continue
                     
-                    # 升采样到16kHz (FunASR要求)
+                    # 升采样到16kHz (ASR要求)
                     target_sr = 16000
                     if orig_sr != target_sr:
                         audio_data = _resample_audio(audio_data, orig_sr, target_sr)
                         if audio_data is None:
                             continue
                     
-                    # 使用ASR识别
+                    # 使用ASR识别当前语音段
                     try:
+                        # 每个语音段独立识别，不使用历史上下文
                         result = inference_pipeline(
                             audio_data,
                             cache=cache,
-                            is_final=False,
-                            encoder_chunk_look_back=ENC_LB,
-                            decoder_chunk_look_back=DEC_LB
+                            is_final=True,  # 将每个段都作为最终结果处理
+                            encoder_chunk_look_back=0,  # 不使用历史编码器上下文
+                            decoder_chunk_look_back=0   # 不使用历史解码器上下文
                         )
                         
                         # 提取识别文本
                         text = _extract_asr_text(result)
                         if text:
-                            current_full_text = text
-                            
-                            # 只发送新增的文本部分
-                            if text != last_sent_text:
-                                # 计算新增的文本
-                                if last_sent_text and text.startswith(last_sent_text):
-                                    # 提取新增部分
-                                    new_text = text[len(last_sent_text):].strip()
-                                    if new_text:
-                                        send_text = text  # 发送完整文本，让前端处理增量显示
-                                    else:
-                                        send_text = None  # 没有新内容
-                                else:
-                                    # 文本完全不同，发送完整文本
-                                    send_text = text
-                                
-                                if send_text and connection_state["is_alive"]:
-                                    try:
-                                        # 发送带有消息ID的文本
-                                        message_data = {
-                                            "type": "listening_text",
-                                            "messageId": current_message_id,
-                                            "text": send_text,
-                                            "timestamp": datetime.now().isoformat(),
-                                            "chunk_number": chunk_counter
-                                        }
-                                        await asyncio.wait_for(websocket.send_text(json.dumps(message_data)), timeout=1.0)
-                                        log.info(f"发送ASR结果 - 块#{chunk_counter}, 消息ID: {current_message_id}, 文本: '{send_text}'")
-                                        last_sent_text = text
-                                        log.debug(f"发送结构体: {json.dumps(message_data)}")
-                                    except (asyncio.TimeoutError, Exception) as e:
-                                        log.warning(f"发送ASR结果失败，WebSocket可能已断开: {e}")
-                                        connection_state["is_alive"] = False
-                                        break
-                                else:
-                                    log.debug(f"无新内容或连接已断开 (块#{chunk_counter})")
-                            else:
-                                log.debug(f"文本无变化，跳过发送 (块#{chunk_counter})")
+                            # 为当前语音段生成消息ID并立即发送结果
+                            if connection_state["is_alive"]:
+                                try:
+                                    message_id = str(uuid.uuid4())
+                                    message_data = {
+                                        "type": "listening_text",
+                                        "messageId": message_id,
+                                        "text": text,
+                                        "timestamp": datetime.now().isoformat(),
+                                        "chunk_number": chunk_counter,
+                                        "sequence": current_sequence
+                                    }
+                                    await asyncio.wait_for(websocket.send_text(json.dumps(message_data)), timeout=1.0)
+                                    log.info(f"发送语音段ASR结果 - 序列#{current_sequence}, 块#{chunk_counter}, 消息ID: {message_id}, 文本: '{text}'")
+                                except (asyncio.TimeoutError, Exception) as e:
+                                    log.warning(f"发送ASR结果失败，WebSocket可能已断开: {e}")
+                                    connection_state["is_alive"] = False
+                                    break
+                        else:
+                            log.debug(f"语音段无识别结果 - 序列#{current_sequence}, 块#{chunk_counter}")
                     
                     except Exception as e:
-                        log.error(f"ASR识别失败 (块#{chunk_counter}): {e}")
-                        # ASR失败时考虑重置缓存
-                        if "memory" in str(e).lower() or "timeout" in str(e).lower():
-                            log.warning("检测到内存或超时错误，重置ASR缓存")
-                            cache.clear()
-                            current_message_id = str(uuid.uuid4())  # 生成新消息ID
-                            log.info(f"错误重置后生成新消息ID: {current_message_id}")
-                            last_message_reset = chunk_counter
-                            chunk_counter = 0
-                            last_sent_text = ""
+                        log.error(f"ASR识别失败 - 序列#{current_sequence}, 块#{chunk_counter}: {e}")
+                        chunk_counter = 0
+                        last_sequence = -1
                 
                 elif message["type"] == "call_end":
                     log.info(f"通话结束: 呼叫ID={message['call_id']}")
-                    # 发送最终结果
-                    if current_full_text:
-                        try:
-                            # 最终识别
-                            result = inference_pipeline(
-                                np.array([]),  # 空数组表示结束
-                                cache=cache,
-                                is_final=True,
-                                encoder_chunk_look_back=ENC_LB,
-                                decoder_chunk_look_back=DEC_LB
-                            )
-                            final_text = _extract_asr_text(result)
-                            final_result = final_text if final_text else current_full_text
-                            if connection_state["is_alive"]:
-                                try:
-                                    await asyncio.wait_for(websocket.send_text(f"[通话结束] {final_result}"), timeout=1.0)
-                                    log.info(f"发送最终识别结果: 总块数={chunk_counter}, 最终文本='{final_result}'")
-                                except (asyncio.TimeoutError, Exception) as e:
-                                    log.warning(f"发送最终结果失败: {e}")
-                                    connection_state["is_alive"] = False
-                            else:
-                                log.info("连接已断开，跳过发送最终结果")
-                        except Exception as e:
-                            log.error(f"最终ASR识别失败: {e}")
-                            if connection_state["is_alive"]:
-                                try:
-                                    await asyncio.wait_for(websocket.send_text(f"[通话结束] {current_full_text}"), timeout=1.0)
-                                except:
-                                    connection_state["is_alive"] = False
-                    else:
-                        if connection_state["is_alive"]:
-                            try:
-                                await asyncio.wait_for(websocket.send_text("[通话结束] 无识别内容"), timeout=1.0)
-                            except:
-                                connection_state["is_alive"] = False
-                    
-                    # 重置所有状态
-                    cache.clear()
-                    last_sent_text = ""
-                    current_full_text = ""
-                    current_message_id = str(uuid.uuid4())  # 为下一次通话生成新的消息ID
+                    # 通话结束不需要处理最终ASR结果，因为每个段都已经是最终结果
                     chunk_counter = 0
-                    last_message_reset = 0
-                    log.info(f"通话结束，已重置所有ASR状态，新消息ID: {current_message_id}")
+                    last_sequence = -1
+                    log.info("通话结束，已重置所有ASR状态")
             
             except zmq.error.Again:
-                # 超时，没有新消息 - 释放控制权并继续
-                await asyncio.sleep(0.01)
+                # 超时，没有新消息
+                log.debug("ZMQ接收超时，等待新消息...")
+                await asyncio.sleep(0.1)
                 continue
             except zmq.error.ZMQError as e:
                 log.error(f"ZMQ错误: {e}")
-                await asyncio.sleep(0.1)
+                # 添加更详细的错误信息
+                log.error(f"ZMQ错误详情: type={type(e)}, errno={e.errno if hasattr(e, 'errno') else 'N/A'}")
+                await asyncio.sleep(1.0)  # 发生错误时等待更长时间
                 # ZMQ连接问题，可能需要退出
                 if "Connection refused" in str(e) or "No such device" in str(e):
                     log.error("ZMQ连接失败，退出处理循环")
@@ -1008,6 +704,7 @@ async def _process_zmq_voice_data(websocket, connection_state):
         log.error(f"ZMQ语音数据处理异常: {e}")
     finally:
         try:
+            log.info(f"关闭ZMQ连接，共处理了 {chunk_counter} 个音频块")
             socket.close()
             context.term()
         except Exception as e:
