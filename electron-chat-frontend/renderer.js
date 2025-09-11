@@ -196,6 +196,10 @@ class CallDisplayManager {
         this.asrMessageId = null;
         this.asrTranscriptQueue = []; // 维护已确认的文本队列
         this.currentInterimText = ''; // 当前临时文本
+    // 新增: 结构化增量管理
+    this.asrActiveMessageId = null; // 当前活跃句子的 messageId
+    this.asrActiveRevision = -1;    // 当前活跃句子的最新 revision
+    this.asrMessageMap = new Map(); // messageId -> { text, revision, final }
 
         this.setupWebSocketCallbacks();
         this.setupEventListeners();
@@ -837,13 +841,27 @@ class CallDisplayManager {
         console.log('Handling ASR message data:', data);
         let text = '';
         let isFinal = false;
+        let messageId = null;
+        let revision = null;
+        let isStructured = false;
 
         try {
             // 首先尝试解析为JSON，这是FunASR的标准格式
             const result = JSON.parse(data);
-            text = result.text || '';
-            isFinal = result.is_final || false;
-            console.log(`Parsed JSON ASR result - text: "${text}", is_final: ${isFinal}`);
+            if (result.type === 'asr_update' && result.messageId) {
+                // 新结构 from backend
+                isStructured = true;
+                text = result.text || '';
+                isFinal = !!result.is_final;
+                messageId = result.messageId;
+                revision = typeof result.revision === 'number' ? result.revision : 0;
+                console.log(`Parsed structured ASR update: id=${messageId} rev=${revision} final=${isFinal} text="${text}"`);
+            } else {
+                // 旧结构兼容
+                text = result.text || '';
+                isFinal = result.is_final || false;
+                console.log(`Parsed legacy JSON ASR result - text: "${text}", is_final: ${isFinal}`);
+            }
         } catch (error) {
             // 如果解析失败，直接将data视为纯文本字符串
             // 这可以兼容没有严格遵循JSON格式的后端实现
@@ -853,12 +871,80 @@ class CallDisplayManager {
             isFinal = true; 
         }
 
-        if (text && text.length > 0) {
-            console.log(`Updating UI with text: "${text}", isFinal: ${isFinal}`);
-            console.log(`Current queue length: ${this.asrTranscriptQueue.length}, Current interim: "${this.currentInterimText}"`);
-            this.updateAsrContent(text, isFinal);
-        } else {
+        if (!text) {
             console.log('ASR message does not contain processable text.');
+            return;
+        }
+
+        if (!isStructured) {
+            // 原始逻辑保持
+            console.log(`Updating UI (legacy) with text: "${text}", isFinal: ${isFinal}`);
+            this.updateAsrContent(text, isFinal);
+            return;
+        }
+
+        // 结构化增量处理
+        // 如果是新 messageId 且之前有未final的 active，已由后端 finalize，不需处理。
+        if (this.asrActiveMessageId === null) {
+            this.asrActiveMessageId = messageId;
+            this.asrActiveRevision = -1;
+        }
+
+        // 如果切换到新的 messageId (说明上一句已经结束)，重置 interim
+        if (messageId !== this.asrActiveMessageId) {
+            // 安全起见把 active 句子状态标记 final（如果后端没发final也不会重复显示）
+            const prev = this.asrMessageMap.get(this.asrActiveMessageId);
+            if (prev && !prev.final) {
+                prev.final = true;
+                if (prev.text && !this.asrTranscriptQueue.includes(prev.text)) {
+                    this.asrTranscriptQueue.push(prev.text);
+                }
+            }
+            this.currentInterimText = '';
+            this.asrActiveMessageId = messageId;
+            this.asrActiveRevision = -1;
+        }
+
+        // 检查 revision 乱序
+        const existing = this.asrMessageMap.get(messageId);
+        if (existing && revision !== null && revision <= existing.revision) {
+            console.log(`Discard out-of-order / stale update: rev=${revision} <= ${existing.revision}`);
+            return;
+        }
+
+        // 更新/创建记录
+        const record = {
+            text,
+            revision: revision ?? ((existing ? existing.revision : 0) + 1),
+            final: isFinal
+        };
+        this.asrMessageMap.set(messageId, record);
+        this.asrActiveRevision = record.revision;
+
+        if (isFinal) {
+            // 句子完成，加入队列
+            if (text.trim()) {
+                this.asrTranscriptQueue.push(text.trim());
+            }
+            if (this.asrActiveMessageId === messageId) {
+                this.asrActiveMessageId = null; // 下次新句子会重新赋值
+                this.currentInterimText = '';
+            }
+        } else {
+            // 临时更新
+            this.currentInterimText = text.trim();
+        }
+
+        // 重绘
+        const asrContent = document.getElementById('asrContent');
+        if (asrContent) {
+            const finalText = this.asrTranscriptQueue.join(' ');
+            let html = '';
+            if (finalText) html += `<span class="final-transcript">${finalText}</span>`;
+            if (this.currentInterimText) html += `<span class="interim-transcript">${finalText ? ' ' : ''}${this.currentInterimText}</span>`;
+            asrContent.innerHTML = html;
+            const wrapper = document.querySelector('.asr-content-wrapper');
+            if (wrapper) wrapper.scrollTop = wrapper.scrollHeight;
         }
     }
 

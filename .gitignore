@@ -21,7 +21,6 @@ yarn-error.log*
 /electron-chat-frontend/dist
 /electron-chat-frontend/out
 /electron-chat-frontend/build
-*.exe
 *.dmg
 *.deb
 *.rpm

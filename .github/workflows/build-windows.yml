@@ -1,0 +1,38 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    name: Build Windows NSIS installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install NSIS (makensis)
+        run: choco install nsis -y
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: electron-chat-frontend
+
+      - name: Build Windows installer
+        run: npm run build:win --if-present
+        working-directory: electron-chat-frontend
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-chat-windows-installer
+          path: electron-chat-frontend/dist/*.exe
