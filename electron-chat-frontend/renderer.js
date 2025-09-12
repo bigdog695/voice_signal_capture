@@ -174,6 +174,9 @@ class WebSocketManager {
 // 通话展示管理器
 class CallDisplayManager {
     constructor() {
+    // 统一日志前缀（便于过滤）
+    this.logPrefix = '[RealtimeListening]';
+    this._log = (...args) => console.log(this.logPrefix, ...args);
         this.configManager = new ConfigManager();
         this.calls = [];
         this.currentCallId = null;
@@ -224,13 +227,9 @@ class CallDisplayManager {
     }
 
     setupEventListeners() {
-        // 查看当前通话按钮
+        // 统一按钮：实时通话监听 (/listening)
         document.getElementById('viewCurrentCallBtn').addEventListener('click', () => {
-            this.connectToCurrentCall();
-        });
-        
-        // 查看本机通话监听按钮
-        document.getElementById('viewLocalMonitorBtn').addEventListener('click', () => {
+            this._log('Button clicked -> start /listening connection');
             this.connectToLocalMonitor();
         });
         
@@ -1048,29 +1047,7 @@ class CallDisplayManager {
         return output.buffer;
     }
 
-    // 连接到当前通话
-    connectToCurrentCall() {
-        if (this.wsManager.ws && this.wsManager.ws.readyState === WebSocket.OPEN) {
-            this.showLiveCallWindow();
-        } else {
-            // 尝试连接
-            this.wsManager.connect();
-            
-            // 监听连接状态
-            const checkConnection = () => {
-                if (this.wsManager.ws && this.wsManager.ws.readyState === WebSocket.OPEN) {
-                    this.showLiveCallWindow();
-                } else if (this.wsManager.ws && this.wsManager.ws.readyState === WebSocket.CLOSED) {
-                    alert('没有正在进行的通话');
-                } else {
-                    // 连接中，等待一会再检查
-                    setTimeout(checkConnection, 1000);
-                }
-            };
-            
-            setTimeout(checkConnection, 500);
-        }
-    }
+    // 废弃 connectToCurrentCall (前端不再主动推流)，保留监听模式
     
     // 连接到本机通话监听
     connectToLocalMonitor() {
@@ -1084,14 +1061,11 @@ class CallDisplayManager {
         
         try {
             const monitorUrl = this.configManager.getListeningUrl();
-            console.log('=== 连接本机监听服务 ===');
-            console.log('监听URL:', monitorUrl);
-            
+            this._log('Connecting to backend websocket', monitorUrl);
             this.monitorWs = new WebSocket(monitorUrl);
-            console.log('WebSocket对象创建成功');
             this.setupMonitorWebSocket();
         } catch (error) {
-            console.error('连接本机监听失败:', error);
+            this._log('Connect failed', error);
             alert('连接本机监听失败: ' + error.message);
             this.hideLocalMonitorWindow();
         }
@@ -1102,41 +1076,34 @@ class CallDisplayManager {
         if (!this.monitorWs) return;
         
         this.monitorWs.onopen = () => {
-            console.log('本机监听连接成功');
+            this._log('WebSocket OPEN');
             this.isMonitoring = true;
             this.updateMonitorStatus('已连接', true);
         };
         
         this.monitorWs.onmessage = (event) => {
-            console.log('=== 监听端点接收消息 ===');
-            console.log('原始数据类型:', typeof event.data);
-            console.log('原始数据长度:', event.data.length);
-            console.log('原始数据内容:', event.data);
-            
+            const raw = event.data;
+            let parsed = null;
             try {
-                // 尝试解析为JSON（保持向后兼容）
-                const data = JSON.parse(event.data);
-                console.log('成功解析为JSON:', data);
-                console.log('JSON数据类型:', data.type);
-                console.log('JSON文本内容:', data.text);
-                this.handleMonitorMessage(data);
-            } catch (error) {
-                console.log('JSON解析失败，处理为纯文本流');
-                console.log('解析错误:', error.message);
-                // 如果不是JSON，直接处理为文本流
-                this.addMonitorMessage(event.data);
+                parsed = JSON.parse(raw);
+            } catch (_) { /* ignore */ }
+            if (parsed) {
+                this._log('RX', parsed.type, parsed.text || parsed.message || '');
+                this.handleMonitorMessage(parsed);
+            } else {
+                this._log('RX (plain)', raw.slice(0,120));
+                this.addMonitorMessage(raw);
             }
-            console.log('=== 消息处理完成 ===');
         };
         
-        this.monitorWs.onclose = () => {
-            console.log('本机监听连接关闭');
+        this.monitorWs.onclose = (e) => {
+            this._log('WebSocket CLOSE', e.code, e.reason);
             this.isMonitoring = false;
             this.updateMonitorStatus('连接断开', false);
         };
         
         this.monitorWs.onerror = (error) => {
-            console.error('本机监听连接错误:', error);
+            this._log('WebSocket ERROR', error);
             this.updateMonitorStatus('连接错误', false);
         };
     }
@@ -1148,24 +1115,23 @@ class CallDisplayManager {
         console.log('完整数据:', data);
         
         if (data.type === 'listening_text') {
-            console.log('处理 listening_text 类型消息');
-            console.log('文本内容:', data.text);
+            this._log('handle listening_text', data.text);
             this.addMonitorMessage(data.text);
+        } else if (data.type === 'asr_update') {
+            // 新结构化监听结果
+            const { messageId, text, is_final, revision } = data;
+            this._log('handle asr_update', messageId, revision, is_final, text);
+            this.addMonitorStructuredMessage(messageId, text, is_final, revision);
         } else if (data.type === 'status') {
-            console.log('处理 status 类型消息');
-            console.log('监听状态:', data.message);
+            this._log('status', data.message);
         } else {
-            console.log('未知消息类型:', data.type);
+            this._log('unknown message type', data.type);
         }
-        console.log('=== JSON消息处理完成 ===');
     }
     
     // 添加监听消息到界面
     addMonitorMessage(text) {
-        console.log('=== 添加监听消息到界面 ===');
-        console.log('文本内容类型:', typeof text);
-        console.log('文本内容长度:', text.length);
-        console.log('文本内容:', text);
+    this._log('UI append streaming text', (text||'').slice(0,60));
         
         const monitorMessages = document.getElementById('monitorMessages');
         if (!monitorMessages) {
@@ -1204,6 +1170,33 @@ class CallDisplayManager {
         // 限制消息数量
         const maxMessages = 50;
         if (monitorMessages.children.length > maxMessages) {
+            monitorMessages.removeChild(monitorMessages.firstChild);
+        }
+    }
+
+    // 新增：结构化监听消息（句子级，不做增量修订，只展示最终）
+    addMonitorStructuredMessage(messageId, text, isFinal, revision) {
+        if (!text) return;
+        const monitorMessages = document.getElementById('monitorMessages');
+        if (!monitorMessages) return;
+        // 每个 messageId 固定一条
+        let node = monitorMessages.querySelector(`[data-mid="${messageId}"]`);
+        if (!node) {
+            node = document.createElement('div');
+            node.className = 'monitor-message';
+            node.setAttribute('data-mid', messageId);
+            const timeString = new Date().toLocaleTimeString();
+            node.innerHTML = `<div class="monitor-message-text"></div><div class="monitor-message-time">${timeString}</div>`;
+            monitorMessages.appendChild(node);
+        }
+        const textEl = node.querySelector('.monitor-message-text');
+        if (textEl) textEl.textContent = text;
+        if (isFinal) node.classList.add('final');
+        // 滚动
+        monitorMessages.scrollTop = monitorMessages.scrollHeight;
+        // 限制数量
+        const maxMessages = 200;
+        while (monitorMessages.children.length > maxMessages) {
             monitorMessages.removeChild(monitorMessages.firstChild);
         }
     }

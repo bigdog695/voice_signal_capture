@@ -16,179 +16,26 @@ import scipy.signal
 import io
 import wave
 
-# ASR相关配置
-MODEL_NAME: str = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
-MODEL_REV: str = "v2.0.4"
-DEVICE: str = "cuda"  # 改为使用GPU
-
-# 音频参数配置
-CHUNK_SIZE = [0, 10, 5]  # 600ms frame
-ENC_LB = 4  # encoder look-back (chunks) 
-DEC_LB = 1  # decoder look-back (chunks)
-STRIDE_SIZE = CHUNK_SIZE[1] * 960  # 9600
-BYTES_PER_FRAME = STRIDE_SIZE * 2   # 19200 (16-bit PCM)
-
-# 设置日志
+# ================= Logging & Constants =================
+LOG_NAME = "RealtimeListening"
 logging.basicConfig(
-    level=logging.DEBUG,  # 改为DEBUG级别以获取更详细的日志
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 )
-log = logging.getLogger("VoiceChatBackend")
+log = logging.getLogger(LOG_NAME)
 
-# 数据模型
-class ChatMessage(BaseModel):
-    id: str
-    chat_id: str
-    speaker: str  # "user" or "assistant"
-    content: str
-    timestamp: datetime
+IP_WHITE_LIST = ["*"]  # 可改为具体 IP 列表，例如: ["192.168.1.10", "192.168.1.11"]
+PRINT_EVERY = 20
 
-class ChatSession(BaseModel):
-    id: str
-    user_id: str
-    title: str
-    status: str  # "active" or "ended"
-    created_at: datetime
-    ended_at: Optional[datetime] = None
-    messages: List[ChatMessage] = []
-
-# 创建FastAPI应用
-app = FastAPI(title="Voice Chat Backend with ASR", version="2.0.0")
-
-# CORS设置 - 模仿asr folder的配置
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000", "http://localhost:5173", 
-        "http://localhost:5174", "http://localhost:5175",
-        "http://127.0.0.1:3000", "http://127.0.0.1:5173", 
-        "http://127.0.0.1:5174", "http://127.0.0.1:5175",
-        "*"  # 开发阶段允许所有域
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-"""说明: 
-/ws 端点仍保留旧的 ModelScope streaming 方案 (inference_pipeline)
-/listening 端点改为使用 funasr AutoModel + ZMQ PULL + 分块实时识别 (仿照 zmq_test.py)
-"""
-
-# 原 streaming 模型 (保留，以兼容 /ws)
-inference_pipeline = None
-try:
-    import os
-    import torch
-    from modelscope.pipelines import pipeline
-    from modelscope.utils.constant import Tasks
-    log.info(f"加载流式ASR模型(ModelScope) '{MODEL_NAME}' ...")
-    if not torch.cuda.is_available():
-        log.warning("GPU不可用，流式模型使用CPU")
-        DEVICE = "cpu"
-    else:
-        log.info(f"使用GPU: {torch.cuda.get_device_name(0)}")
-    os.environ.setdefault("MODELSCOPE_CACHE", "./model_cache")
-    inference_pipeline = pipeline(
-        task=Tasks.auto_speech_recognition,
-        model=MODEL_NAME,
-        model_revision=MODEL_REV,
-        device=DEVICE,
-        cache_dir=os.environ["MODELSCOPE_CACHE"],
-    )
-    log.info("流式ASR模型加载完成 (用于 /ws)")
-except Exception as e:
-    log.warning(f"流式ASR模型加载失败，将只使用 funasr: {e}")
-    inference_pipeline = None
-
-# funasr 模型 (用于 /listening) -------------------------------------------------
-FUNASR_MODEL_NAME = "paraformer-zh-streaming"
-asr_funasr_model = None
-try:
-    from funasr import AutoModel as _FunASRAutoModel
-    log.info(f"加载 funasr 模型 '{FUNASR_MODEL_NAME}' (GPU 优先) ...")
-    device_name = "cuda:0" if ('torch' in globals() and torch.cuda.is_available()) else "cpu"
-    asr_funasr_model = _FunASRAutoModel(
-        model=FUNASR_MODEL_NAME,
-        model_revision="v2.0.4",
-        vad_model="fsmn-vad",
-        vad_model_revision="v2.0.4",
-        punc_model="ct-punc",
-        punc_model_revision="v2.0.4",
-        device=device_name,
-    )
-    log.info(f"funasr 模型加载成功 (device={device_name}) 用于 /listening")
-except Exception as e:
-    log.error(f"funasr 模型加载失败: {e}")
-    asr_funasr_model = None
-
-# 模拟数据库
-chat_sessions: Dict[str, ChatSession] = {}
-active_connections: Dict[str, WebSocket] = {}
-user_chat_history: Dict[str, List[str]] = {}  # user_id -> [chat_id, ...]
-
-# 启动时初始化示例数据
-def init_sample_data():
-    """初始化示例数据"""
-    user_id = "user_001"
-    
-    # 创建几个示例聊天记录
-    for i in range(3):
-        chat_id = f"chat_{i+1:03d}"
-        session = ChatSession(
-            id=chat_id,
-            user_id=user_id,
-            title=f"Call Session {i+1}",
-            status="ended",
-            created_at=datetime.now(),
-            ended_at=datetime.now(),
-            messages=[
-                ChatMessage(
-                    id=f"msg_{chat_id}_001",
-                    chat_id=chat_id,
-                    speaker="user",
-                    content=f"你好，这是第{i+1}次通话的用户消息。",
-                    timestamp=datetime.now()
-                ),
-                ChatMessage(
-                    id=f"msg_{chat_id}_002",
-                    chat_id=chat_id,
-                    speaker="assistant",
-                    content=f"您好！这是第{i+1}次通话的AI回复。很高兴为您服务。",
-                    timestamp=datetime.now()
-                )
-            ]
-        )
-        chat_sessions[chat_id] = session
-        
-        # 添加到用户聊天历史
-        if user_id not in user_chat_history:
-            user_chat_history[user_id] = []
-        user_chat_history[user_id].append(chat_id)
-    
-    # 创建一个活跃的聊天会话
-    active_chat_id = "chat_active_001"
-    active_session = ChatSession(
-        id=active_chat_id,
-        user_id=user_id,
-        title="Active Call Session",
-        status="active",
-        created_at=datetime.now(),
-        messages=[
-            ChatMessage(
-                id=f"msg_{active_chat_id}_001",
-                chat_id=active_chat_id,
-                speaker="user",
-                content="这是一个正在进行的通话...",
-                timestamp=datetime.now()
-            )
-        ]
-    )
-    chat_sessions[active_chat_id] = active_session
-    user_chat_history[user_id].append(active_chat_id)
-    
-    log.info(f"示例数据初始化完成: {len(chat_sessions)} 个聊天会话")
-
+def rt_event(event: str, **fields):
+    """结构化事件日志 (单行 JSON)，便于后期集中检索。
+    示例: rt_event("asr_result", peer_ip="1.2.3.4", text_len=5)
+    """
+    payload = {"evt": event, "ts": datetime.utcnow().isoformat() + "Z", **fields}
+    try:
+        log.info("RT " + json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        log.info(f"RT {{'evt':'{event}','error':'log_serialize_failed'}}")
 # 立即初始化示例数据
 init_sample_data()
 
@@ -203,7 +50,7 @@ async def root():
             "chat_list": "/chat/list?id=user_001",
             "chat_detail": "/chat/{chat_id}",
             "websocket_chat": "/chatting?id=chat_id",
-            "websocket_asr": "/ws",
+            "websocket_realtime_listening": "/listening",
             "health": "/health",
             "asr_info": "/asr/info"
         },
@@ -368,229 +215,6 @@ async def chatting_websocket(websocket: WebSocket, id: str):
         if id in active_connections:
             del active_connections[id]
 
-# ASR WebSocket端点 - 只使用真实FunASR
-@app.websocket("/ws")
-async def asr_websocket_endpoint(websocket: WebSocket):
-    """ASR WebSocket端点 - 实时语音识别"""
-    await websocket.accept()
-    connection_start = time.time()
-    log.info(f"ASR WebSocket连接已建立 - 时间戳: {connection_start}")
-    
-    # 初始化ASR状态
-    cache: dict = {}
-    buf = bytearray()
-    sample_offset = 0  # ModelScope pipeline需要的偏移量
-    
-    # 性能统计
-    frame_count = 0
-    total_audio_received = 0
-    total_processing_time = 0
-    last_log_time = time.time()
-    
-    # 句子增量跟踪 (同一 messageId 多次修正)
-    current_message_id = str(uuid.uuid4())
-    current_revision = 0
-    last_sent_text = ""
-    last_progress_time = time.time()
-    sentence_finalized = False
-    PUNCT_END = tuple("。！？!?;；.…")
-    STABILITY_WAIT = 0.8  # 秒: 若末尾含句末标点且超过此时间无增长则判定完成
-
-    def build_payload(text: str, is_final: bool, rev: int):
-        return json.dumps({
-            "type": "asr_update",
-            "messageId": current_message_id,
-            "revision": rev,
-            "text": text,
-            "is_final": is_final,
-            "timestamp": datetime.now().isoformat()
-        }, ensure_ascii=False)
-
-    try:
-        while True:
-            # 接收音频字节数据
-            receive_start = time.time()
-            chunk = await websocket.receive_bytes()
-            receive_time = time.time() - receive_start
-            
-            chunk_size = len(chunk)
-            total_audio_received += chunk_size
-            buf.extend(chunk)
-            
-            log.debug(f"收到音频块: {chunk_size} 字节, 接收耗时: {receive_time*1000:.2f}ms, 缓冲区长度: {len(buf)}")
-            
-            # 处理完整音频帧
-            frames_processed = 0
-            while len(buf) >= BYTES_PER_FRAME:
-                frame_start = time.time()
-                frame = bytes(buf[:BYTES_PER_FRAME])
-                del buf[:BYTES_PER_FRAME]
-                
-                # 转换为浮点音频数据
-                conversion_start = time.time()
-                audio = (np.frombuffer(frame, dtype=np.int16)
-                           .astype(np.float32) / 32768.0)
-                conversion_time = time.time() - conversion_start
-                
-                # 使用ModelScope pipeline进行流式识别
-                asr_start = time.time()
-                
-                result = inference_pipeline(
-                    audio,
-                    cache=cache,
-                    is_final=False,
-                    encoder_chunk_look_back=ENC_LB,
-                    decoder_chunk_look_back=DEC_LB
-                )
-                asr_time = time.time() - asr_start
-                
-                # 提取识别文本
-                extract_start = time.time()
-                text = _extract_asr_text(result)
-                extract_time = time.time() - extract_start
-                
-                frame_total_time = time.time() - frame_start
-                total_processing_time += frame_total_time
-                frame_count += 1
-                frames_processed += 1
-                
-                # 发送结果
-                if text:
-                    # 增量判定
-                    send_payload = None
-                    finalized_now = False
-                    if not last_sent_text:
-                        # 初次
-                        last_sent_text = text
-                        current_revision = 0
-                        sentence_finalized = False
-                        send_payload = build_payload(last_sent_text, False, current_revision)
-                        last_progress_time = time.time()
-                    elif text == last_sent_text:
-                        # 无新内容，检查是否需要 finalize (标点 + 稳定时间)
-                        if (not sentence_finalized and last_sent_text.endswith(PUNCT_END)
-                                and time.time() - last_progress_time >= STABILITY_WAIT):
-                            sentence_finalized = True
-                            finalized_now = True
-                            send_payload = build_payload(last_sent_text, True, current_revision)
-                    else:
-                        # 是否延续 (前缀扩展)
-                        if text.startswith(last_sent_text):
-                            # 修正 / 追加
-                            last_sent_text = text
-                            current_revision += 1
-                            sentence_finalized = False
-                            send_payload = build_payload(last_sent_text, False, current_revision)
-                            last_progress_time = time.time()
-                        else:
-                            # 新句子开始 -> 先 finalize 旧句子 (若未 final)
-                            finalize_payload = None
-                            if not sentence_finalized and last_sent_text:
-                                finalize_payload = build_payload(last_sent_text, True, current_revision)
-                            # 新句子
-                            current_message_id = str(uuid.uuid4())
-                            current_revision = 0
-                            last_sent_text = text
-                            sentence_finalized = False
-                            new_payload = build_payload(last_sent_text, False, current_revision)
-                            last_progress_time = time.time()
-                            # 发送顺序: finalize 旧 -> 新增量
-                            if finalize_payload:
-                                await websocket.send_text(finalize_payload)
-                            send_payload = new_payload
-
-                    if send_payload:
-                        send_start = time.time()
-                        await websocket.send_text(send_payload)
-                        send_time = time.time() - send_start
-                        log.info(
-                            f"ASR识别[帧{frame_count}] rev={current_revision} final={sentence_finalized and finalized_now}: '{last_sent_text}' | 处理: {frame_total_time*1000:.2f}ms "
-                            f"(转换:{conversion_time*1000:.2f}ms + ASR:{asr_time*1000:.2f}ms + 提取:{extract_time*1000:.2f}ms + 发送:{send_time*1000:.2f}ms)"
-                        )
-                else:
-                    log.debug(
-                        f"ASR无输出[帧{frame_count}] | 处理: {frame_total_time*1000:.2f}ms (转换:{conversion_time*1000:.2f}ms + ASR:{asr_time*1000:.2f}ms + 提取:{extract_time*1000:.2f}ms)"
-                    )
-            
-            # 每5秒输出一次统计信息
-            current_time = time.time()
-            if current_time - last_log_time >= 5.0:
-                avg_processing_time = (total_processing_time / frame_count * 1000) if frame_count > 0 else 0
-                connection_duration = current_time - connection_start
-                audio_rate = total_audio_received / connection_duration if connection_duration > 0 else 0
-                frame_rate = frame_count / connection_duration if connection_duration > 0 else 0
-                
-                log.info(f"=== ASR性能统计 ===")
-                log.info(f"连接时长: {connection_duration:.1f}s")
-                log.info(f"总音频数据: {total_audio_received} 字节 ({audio_rate:.1f} 字节/秒)")
-                log.info(f"处理帧数: {frame_count} ({frame_rate:.2f} 帧/秒)")
-                log.info(f"平均处理时间: {avg_processing_time:.2f}ms/帧")
-                log.info(f"缓冲区状态: {len(buf)} 字节")
-                
-                last_log_time = current_time
-                    
-    except WebSocketDisconnect:
-        disconnect_time = time.time()
-        log.info(f"ASR客户端断开连接 - 处理最终音频 | 连接时长: {disconnect_time - connection_start:.2f}s")
-        
-        # 处理剩余的音频缓冲区
-        if buf:
-            final_start = time.time()
-            audio = (np.frombuffer(buf, dtype=np.int16)
-                       .astype(np.float32) / 32768.0)
-            result = inference_pipeline(
-                audio,
-                cache=cache,
-                is_final=True,
-                encoder_chunk_look_back=ENC_LB,
-                decoder_chunk_look_back=DEC_LB,
-            )
-            final_time = time.time() - final_start
-            text = _extract_asr_text(result)
-            if text:
-                # 若当前句子未 finalize 先 finalize 旧的
-                if last_sent_text and last_sent_text != text and not sentence_finalized:
-                    await websocket.send_text(json.dumps({
-                        "type": "asr_update",
-                        "messageId": current_message_id,
-                        "revision": current_revision,
-                        "text": last_sent_text,
-                        "is_final": True,
-                        "timestamp": datetime.now().isoformat()
-                    }, ensure_ascii=False))
-                # 最终帧文本（可能是最后增量或新句）
-                await websocket.send_text(json.dumps({
-                    "type": "asr_update",
-                    "messageId": current_message_id,
-                    "revision": current_revision + (0 if text == last_sent_text else 1),
-                    "text": text,
-                    "is_final": True,
-                    "timestamp": datetime.now().isoformat()
-                }, ensure_ascii=False))
-                log.info(f"ASR最终识别: '{text}' | 处理: {final_time*1000:.2f}ms")
-            else:
-                # 若没有新文本但存在未 finalize 的句子
-                if last_sent_text and not sentence_finalized:
-                    await websocket.send_text(json.dumps({
-                        "type": "asr_update",
-                        "messageId": current_message_id,
-                        "revision": current_revision,
-                        "text": last_sent_text,
-                        "is_final": True,
-                        "timestamp": datetime.now().isoformat()
-                    }, ensure_ascii=False))
-                    log.info(f"ASR最终补发 finalize: '{last_sent_text}'")
-                else:
-                    log.info(f"ASR最终处理无输出 | 处理: {final_time*1000:.2f}ms")
-    except Exception as e:
-        error_time = time.time()
-        log.error(f"ASR WebSocket错误: {e} | 连接时长: {error_time - connection_start:.2f}s")
-        await websocket.close(code=1011, reason="ASR processing error")
-    finally:
-        final_time = time.time()
-        total_duration = final_time - connection_start
-        avg_processing = (total_processing_time / frame_count * 1000) if frame_count > 0 else 0
-        log.info(f"ASR WebSocket连接已关闭 | 总时长: {total_duration:.2f}s | 总帧数: {frame_count} | 平均处理: {avg_processing:.2f}ms/帧")
 
 def _extract_asr_text(result):
     """从ModelScope pipeline结果中提取文本"""
@@ -688,8 +312,7 @@ def _resample_audio(audio_data, orig_sr, target_sr):
         log.error(f"音频重采样失败: {e}")
         return None
 
-IP_WHITE_LIST = ["192.168.10.19"]  # 与 zmq_test.py 一致，可按需修改
-PRINT_EVERY = 20
+# (去重) 下方原重复 IP_WHITE_LIST/PRINT_EVERY 定义已移除，保持顶部统一配置
 
 async def _process_zmq_voice_data(websocket, connection_state):
     """使用 PULL + multipart (meta_json, pcm_bytes) 模式消费语音数据并调用 funasr 识别"""
@@ -703,9 +326,9 @@ async def _process_zmq_voice_data(websocket, connection_state):
     zmq_endpoint = "tcp://0.0.0.0:5555"  # 与 zmq_test.py 缺省保持一致
     try:
         sock.bind(zmq_endpoint)
-        log.info(f"ZMQ PULL 绑定 {zmq_endpoint}")
+        rt_event("zmq_bind", endpoint=zmq_endpoint)
     except Exception as e:
-        log.error(f"ZMQ 绑定失败: {e}")
+        rt_event("zmq_bind_error", error=str(e))
         return
 
     sessions = {}  # (peer_ip, source, call_id) -> state
@@ -730,23 +353,41 @@ async def _process_zmq_voice_data(websocket, connection_state):
         call_ids[key_ps] = call_ids.get(key_ps, 1) + 1
 
     async def send_recog(peer_ip, source, call_id, seq, text, meta):
+        """发送结构化识别结果: 兼容旧 listening_text + 新 asr_update"""
         if not text:
             return
-        payload = {
-            "type": "listening_text",
+        message_id = f"{peer_ip}-{source}-{call_id}-{seq}-{uuid.uuid4().hex[:8]}"
+        base_info = {
             "peer_ip": peer_ip,
             "source": source,
             "call_id": call_id,
             "sequence": seq,
-            "text": text,
             "start_ts": meta.get('start_ts'),
             "end_ts": meta.get('end_ts'),
             "timestamp": datetime.now().isoformat(),
         }
+        # 新结构 (每个ZMQ段视为最终一句)
+        asr_update = {
+            "type": "asr_update",
+            "messageId": message_id,
+            "revision": 0,
+            "text": text,
+            "is_final": True,
+            **base_info,
+        }
+        # 旧结构（保留一段时间，前端迁移后可移除）
+        legacy = {
+            "type": "listening_text",
+            "text": text,
+            **base_info,
+        }
         try:
-            await websocket.send_text(json.dumps(payload))
+            await websocket.send_text(json.dumps(asr_update, ensure_ascii=False))
+            await websocket.send_text(json.dumps(legacy, ensure_ascii=False))
+            rt_event("push_result", peer_ip=peer_ip, source=source, call_id=call_id, seq=seq,
+                     msg_id=message_id, text_len=len(text))
         except Exception as e:
-            log.warning(f"发送识别结果失败: {e}")
+            rt_event("push_error", error=str(e))
             connection_state["is_alive"] = False
 
     def process_asr_chunk(pcm_bytes, meta):
@@ -783,11 +424,11 @@ async def _process_zmq_voice_data(websocket, connection_state):
             try:
                 meta = json.loads(meta_raw.decode('utf-8'))
             except Exception as e:
-                log.warning(f"解析 meta JSON 失败: {e}")
+                rt_event("meta_parse_error", error=str(e))
                 continue
 
             peer_ip = meta.get('peer_ip', 'unknown')
-            if peer_ip not in IP_WHITE_LIST:
+            if IP_WHITE_LIST and IP_WHITE_LIST != ["*"] and peer_ip not in IP_WHITE_LIST:
                 # 白名单过滤
                 continue
             source = meta.get('source', 'unknown')
@@ -810,14 +451,18 @@ async def _process_zmq_voice_data(websocket, connection_state):
                 seq_counter += 1
                 text = process_asr_chunk(pcm, meta)
                 if text:
+                    rt_event("asr_result", peer_ip=peer_ip, source=source, call_id=key[2],
+                             seq=seq_counter, text=text)
                     await send_recog(peer_ip, source, key[2], seq_counter, text, meta)
 
             if sess['chunks'] % PRINT_EVERY == 0:
-                log.debug(f"[CHUNK] {peer_ip} {source} call#{key[2]} chunks={sess['chunks']} bytes={sess['bytes']}")
+                rt_event("chunk_progress", peer_ip=peer_ip, source=source, call_id=key[2],
+                         chunks=sess['chunks'], bytes=sess['bytes'])
 
             if is_finished:
                 dur_sec = (len(sess['buffer']) / 2) / 8000.0
-                log.info(f"[CALL DONE] {peer_ip} {source} call#{key[2]} chunks={sess['chunks']} bytes={sess['bytes']} dur≈{dur_sec:.2f}s")
+                rt_event("call_finished", peer_ip=peer_ip, source=source, call_id=key[2],
+                         chunks=sess['chunks'], bytes=sess['bytes'], duration_sec=round(dur_sec,2))
                 del sessions[key]
                 rotate_call(peer_ip, source)
                 # 通知前端通话结束
@@ -835,24 +480,25 @@ async def _process_zmq_voice_data(websocket, connection_state):
                 break
 
             if asyncio.current_task().cancelled():
-                log.info("ZMQ任务取消")
+                rt_event("zmq_task_cancel_requested")
                 break
 
     except asyncio.CancelledError:
-        log.info("ZMQ处理任务被取消 (外部)" )
+        rt_event("zmq_task_cancelled")
     finally:
         try:
             sock.close(0)
             ctx.term()
         except Exception as e:
-            log.warning(f"关闭ZMQ资源异常: {e}")
-        log.info("ZMQ语音数据处理器已关闭")
+            rt_event("zmq_close_error", error=str(e))
+        rt_event("zmq_task_stopped")
 
 @app.websocket("/listening")
 async def websocket_listening_endpoint(websocket: WebSocket):
     """本机通话监听WebSocket端点 - 真实ZMQ数据源 + ASR识别"""
     await websocket.accept()
-    log.info("本机监听客户端已连接")
+    client_id = uuid.uuid4().hex[:8]
+    rt_event("client_connect", client_id=client_id, path="/listening")
     
     # 创建共享的连接状态对象
     connection_state = {
@@ -864,7 +510,8 @@ async def websocket_listening_endpoint(websocket: WebSocket):
     
     try:
         # 发送连接确认
-        await websocket.send_text("监听服务已连接，正在等待通话数据...")
+    await websocket.send_text("监听服务已连接，正在等待通话数据...")
+    rt_event("client_ready", client_id=client_id)
         
         # 启动ZMQ语音数据处理任务，传入共享状态
         zmq_task = asyncio.create_task(_process_zmq_voice_data(websocket, connection_state))
@@ -882,12 +529,14 @@ async def websocket_listening_endpoint(websocket: WebSocket):
                         "type": "pong",
                         "timestamp": datetime.now().isoformat()
                     }))
+                    rt_event("client_heartbeat", client_id=client_id)
                 elif message_data.get("type") == "stop_listening":
                     # 停止监听
                     connection_state["is_alive"] = False
                     if zmq_task and not zmq_task.done():
                         zmq_task.cancel()
                     await websocket.send_text("监听服务已停止")
+                    rt_event("client_stop_request", client_id=client_id)
                     break
                     
             except asyncio.TimeoutError:
@@ -910,37 +559,37 @@ async def websocket_listening_endpoint(websocket: WebSocket):
                 continue
             except WebSocketDisconnect:
                 # WebSocket断开，立即通知ZMQ任务
-                log.info("监听WebSocket连接断开")
+                rt_event("client_ws_disconnect", client_id=client_id)
                 connection_state["is_alive"] = False
                 break
                 
     except WebSocketDisconnect:
-        log.info("监听客户端断开连接")
+        rt_event("client_disconnect", client_id=client_id)
         connection_state["is_alive"] = False
     except Exception as e:
-        log.error(f"监听WebSocket错误: {e}")
+        rt_event("client_error", client_id=client_id, error=str(e))
         connection_state["is_alive"] = False
         try:
             await websocket.close(code=1011, reason="Listening service error")
         except Exception as close_e:
-            log.error(f"关闭WebSocket时出错: {close_e}")
+            rt_event("client_close_error", client_id=client_id, error=str(close_e))
     finally:
         # 确保连接状态被标记为断开
         connection_state["is_alive"] = False
         
         # 确保ZMQ任务被取消
         if zmq_task and not zmq_task.done():
-            log.info("正在取消ZMQ处理任务...")
+            rt_event("zmq_task_cancelling", client_id=client_id)
             zmq_task.cancel()
             try:
                 await asyncio.wait_for(zmq_task, timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
-                log.info("ZMQ任务已取消")
+                rt_event("zmq_task_cancel_wait_done")
             except Exception as e:
-                log.error(f"取消ZMQ任务时出错: {e}")
+                rt_event("zmq_task_cancel_error", error=str(e))
         
         connection_duration = time.time() - connection_state["connected_at"]
-        log.info(f"监听服务已关闭，连接时长: {connection_duration:.2f}s")
+        rt_event("client_session_end", client_id=client_id, duration_sec=round(connection_duration,2))
 
 if __name__ == "__main__":
     log.info("========================================")
