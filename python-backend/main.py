@@ -36,6 +36,45 @@ def rt_event(event: str, **fields):
         log.info("RT " + json.dumps(payload, ensure_ascii=False))
     except Exception:
         log.info(f"RT {{'evt':'{event}','error':'log_serialize_failed'}}")
+
+# ================= Chat Data Models & Sample Data =================
+class ChatMessage(BaseModel):
+    id: str
+    speaker: str
+    content: str
+    timestamp: datetime
+
+class ChatSession(BaseModel):
+    id: str
+    title: str
+    status: str  # active / ended
+    created_at: datetime
+    ended_at: Optional[datetime] = None
+    messages: List[ChatMessage] = []
+
+# 全局存储
+chat_sessions: Dict[str, ChatSession] = {}
+user_chat_history: Dict[str, List[str]] = {}
+active_connections: Dict[str, WebSocket] = {}
+
+def init_sample_data():
+    """初始化一些演示聊天数据，避免API调用时报空。"""
+    if chat_sessions:
+        return  # 已初始化
+    demo_chat_id = "chat_demo_001"
+    now = datetime.utcnow()
+    msg1 = ChatMessage(id=uuid.uuid4().hex[:8], speaker="user", content="你好，这是一个示例对话。", timestamp=now)
+    msg2 = ChatMessage(id=uuid.uuid4().hex[:8], speaker="assistant", content="你好，我在，这是一条示例回复。", timestamp=now)
+    session = ChatSession(
+        id=demo_chat_id,
+        title="示例会话",
+        status="active",
+        created_at=now,
+        messages=[msg1, msg2]
+    )
+    chat_sessions[demo_chat_id] = session
+    user_chat_history.setdefault("user_001", []).append(demo_chat_id)
+    rt_event("sample_data_initialized", chat_count=len(chat_sessions))
 # 立即初始化示例数据
 init_sample_data()
 
