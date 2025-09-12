@@ -29,8 +29,14 @@ PRINT_EVERY = 20
 
 # ================= ASR Model Configuration =================
 MODEL_NAME = "paraformer-zh-streaming"
-MODEL_REV = "latest"
-DEVICE = "cpu"  # 可按需改为 "cuda" if torch.cuda.is_available()
+# 与脚本一致使用明确 revision，避免 latest 不存在导致失败
+MODEL_REV = "v2.0.4"
+# 启动时自动检测 GPU 可用性
+try:
+    import torch  # noqa
+    DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+except Exception:
+    DEVICE = "cpu"
 
 # chunk / stride parameters (placeholders adjustable to real model spec)
 CHUNK_SIZE = 16000  # 1s at 16kHz
@@ -48,6 +54,8 @@ def load_funasr_model():
         return asr_funasr_model
     try:
         rt_event("asr_model_loading_start", model=MODEL_NAME, rev=MODEL_REV, device=DEVICE)
+        import os
+        os.environ.setdefault("USE_TORCH", "1")
         from funasr import AutoModel
         asr_funasr_model = AutoModel(
             model=MODEL_NAME,
