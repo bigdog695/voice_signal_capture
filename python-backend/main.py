@@ -512,50 +512,49 @@ async def websocket_listening_endpoint(websocket: WebSocket):
         await websocket.send_text("监听服务已连接，正在等待通话数据...")
         rt_event("client_ready", client_id=client_id)
 
-            task = asyncio.create_task(_process_zmq_voice_data(websocket, connection_state))
-
-            while connection_state["is_alive"]:
-                try:
-                    data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
-                message_data = json.loads(data)
+        task = asyncio.create_task(_process_zmq_voice_data(websocket, connection_state))
+        while connection_state["is_alive"]:
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+            message_data = json.loads(data)
+            
+            if message_data.get("type") == "ping":
+                await websocket.send_text(json.dumps({
+                    "type": "pong",
+                    "timestamp": datetime.now().isoformat()
+                }))
+                rt_event("client_heartbeat", client_id=client_id)
+            elif message_data.get("type") == "stop_listening":
+                connection_state["is_alive"] = False
+                if zmq_task and not zmq_task.done():
+                    zmq_task.cancel()
+                await websocket.send_text("监听服务已停止")
+                rt_event("client_stop_request", client_id=client_id)
+                break
                 
-                if message_data.get("type") == "ping":
-                    await websocket.send_text(json.dumps({
-                        "type": "pong",
-                        "timestamp": datetime.now().isoformat()
-                    }))
-                    rt_event("client_heartbeat", client_id=client_id)
-                elif message_data.get("type") == "stop_listening":
-                    connection_state["is_alive"] = False
-                    if zmq_task and not zmq_task.done():
-                        zmq_task.cancel()
-                    await websocket.send_text("监听服务已停止")
-                    rt_event("client_stop_request", client_id=client_id)
-                    break
-                    
-            except asyncio.TimeoutError:
-                # 超时是正常的，继续循环
-                # 检查ZMQ任务是否还在运行
-                if zmq_task and zmq_task.done():
-                    # ZMQ任务已结束，检查是否有异常
-                    try:
-                        await zmq_task  # 获取可能的异常
-                    except asyncio.CancelledError:
-                        log.info("ZMQ任务已被取消")
-                    except Exception as e:
-                        log.error(f"ZMQ任务异常结束: {e}")
-                    # ZMQ任务结束，退出监听循环
-                    connection_state["is_alive"] = False
-                    break
-                continue
-            except json.JSONDecodeError:
-                # 如果不是JSON消息，忽略
-                continue
-            except WebSocketDisconnect:
-                # WebSocket断开，立即通知ZMQ任务
-                rt_event("client_ws_disconnect", client_id=client_id)
+        except asyncio.TimeoutError:
+            # 超时是正常的，继续循环
+            # 检查ZMQ任务是否还在运行
+            if zmq_task and zmq_task.done():
+                # ZMQ任务已结束，检查是否有异常
+                try:
+                    await zmq_task  # 获取可能的异常
+                except asyncio.CancelledError:
+                    log.info("ZMQ任务已被取消")
+                except Exception as e:
+                    log.error(f"ZMQ任务异常结束: {e}")
+                # ZMQ任务结束，退出监听循环
                 connection_state["is_alive"] = False
                 break
+            continue
+        except json.JSONDecodeError:
+            # 如果不是JSON消息，忽略
+            continue
+        except WebSocketDisconnect:
+            # WebSocket断开，立即通知ZMQ任务
+            rt_event("client_ws_disconnect", client_id=client_id)
+            connection_state["is_alive"] = False
+            break
 
         except WebSocketDisconnect:
             rt_event("client_disconnect", client_id=client_id)
