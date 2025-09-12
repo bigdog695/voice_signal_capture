@@ -555,34 +555,34 @@ async def websocket_listening_endpoint(websocket: WebSocket):
                 rt_event("client_ws_disconnect", client_id=client_id)
                 connection_state["is_alive"] = False
                 break
-    
-            except WebSocketDisconnect:
-                rt_event("client_disconnect", client_id=client_id)
-                connection_state["is_alive"] = False
+        
+    except WebSocketDisconnect:
+        rt_event("client_disconnect", client_id=client_id)
+        connection_state["is_alive"] = False
+    except Exception as e:
+        rt_event("client_error", client_id=client_id, error=str(e))
+        connection_state["is_alive"] = False
+        try:
+            await websocket.close(code=1011, reason="Listening service error")
+        except Exception as close_e:
+            rt_event("client_close_error", client_id=client_id, error=str(close_e))
+    finally:
+        # 确保连接状态被标记为断开
+        connection_state["is_alive"] = False
+
+        # 确保ZMQ任务被取消
+        if zmq_task and not zmq_task.done():
+            rt_event("zmq_task_cancelling", client_id=client_id)
+            zmq_task.cancel()
+            try:
+                await asyncio.wait_for(zmq_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                rt_event("zmq_task_cancel_wait_done")
             except Exception as e:
-                rt_event("client_error", client_id=client_id, error=str(e))
-                connection_state["is_alive"] = False
-                try:
-                    await websocket.close(code=1011, reason="Listening service error")
-                except Exception as close_e:
-                    rt_event("client_close_error", client_id=client_id, error=str(close_e))
-            finally:
-                # 确保连接状态被标记为断开
-                connection_state["is_alive"] = False
-    
-                # 确保ZMQ任务被取消
-                if zmq_task and not zmq_task.done():
-                    rt_event("zmq_task_cancelling", client_id=client_id)
-                    zmq_task.cancel()
-                    try:
-                        await asyncio.wait_for(zmq_task, timeout=2.0)
-                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                        rt_event("zmq_task_cancel_wait_done")
-                    except Exception as e:
-                        rt_event("zmq_task_cancel_error", error=str(e))
-    
-                connection_duration = time.time() - connection_state["connected_at"]
-                rt_event("client_session_end", client_id=client_id, duration_sec=round(connection_duration,2))
+                rt_event("zmq_task_cancel_error", error=str(e))
+
+        connection_duration = time.time() - connection_state["connected_at"]
+        rt_event("client_session_end", client_id=client_id, duration_sec=round(connection_duration,2))
 
 if __name__ == "__main__":
     log.info("========================================")
