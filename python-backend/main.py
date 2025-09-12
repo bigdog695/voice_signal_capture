@@ -41,6 +41,38 @@ BYTES_PER_FRAME = 3200  # 1600 samples * 2 bytes (int16) when applicable
 
 asr_funasr_model = None  # 模型对象占位（后续需实际加载）
 
+def load_funasr_model():
+    """加载 FunASR 模型（惰性加载），成功返回全局模型对象。"""
+    global asr_funasr_model
+    if asr_funasr_model is not None:
+        return asr_funasr_model
+    try:
+        rt_event("asr_model_loading_start", model=MODEL_NAME, rev=MODEL_REV, device=DEVICE)
+        from funasr import AutoModel
+        asr_funasr_model = AutoModel(
+            model=MODEL_NAME,
+            model_revision=MODEL_REV,
+            vad_model="fsmn-vad",
+            vad_model_revision="v2.0.4",
+            punc_model="ct-punc",
+            punc_model_revision="v2.0.4",
+            device=DEVICE,
+        )
+        rt_event("asr_model_loaded", model=MODEL_NAME, device=DEVICE)
+    except Exception as e:
+        rt_event("asr_model_load_failed", error=str(e))
+        asr_funasr_model = None
+    return asr_funasr_model
+
+@app.on_event("startup")
+async def startup_event():
+    """应用启动时预加载 ASR 模型，避免首次WS建立才去加载造成延迟。"""
+    load_funasr_model()
+    if asr_funasr_model is None:
+        rt_event("asr_model_unavailable_startup")
+    else:
+        rt_event("asr_model_ready_startup")
+
 def rt_event(event: str, **fields):
     """结构化事件日志 (单行 JSON)，便于后期集中检索。
     示例: rt_event("asr_result", peer_ip="1.2.3.4", text_len=5)
@@ -381,6 +413,7 @@ async def _process_zmq_voice_data(websocket, connection_state):
     """使用 PULL + multipart (meta_json, pcm_bytes) 模式消费语音数据并调用 funasr 识别"""
     if asr_funasr_model is None:
         log.error("funasr 模型不可用，终止 ZMQ 处理")
+        await websocket.send_text(json.dumps({"type": "asr_error", "error": "ASR model unavailable"}))
         return
 
     ctx = zmq.Context.instance()
