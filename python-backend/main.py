@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(LOG_NAME)
 
-IP_WHITE_LIST = ["*"]  # 可改为具体 IP 列表，例如: ["192.168.1.10", "192.168.1.11"]
+IP_WHITE_LIST: List[str] = []  # 动态白名单, 初始为空, 通过 /whitelist/register 添加
 PRINT_EVERY = 20
 
 # ================= ASR Model Configuration =================
@@ -174,6 +174,20 @@ async def health_check():
         "total_chats": len(chat_sessions),
         "timestamp": datetime.now().isoformat()
     }
+
+@app.get("/whitelist/register")
+async def whitelist_register(request: fastapi.Request = None, ip: Optional[str] = None):  # type: ignore
+    """注册请求来源IP到白名单。可显式传 ip，否则取 request.client.host"""
+    try:
+        real_ip = ip
+        if real_ip is None and request is not None and request.client:
+            real_ip = request.client.host
+        if real_ip and real_ip not in IP_WHITE_LIST:
+            IP_WHITE_LIST.append(real_ip)
+            rt_event('whitelist_added', ip=real_ip, total=len(IP_WHITE_LIST))
+        return {'whitelist': IP_WHITE_LIST, 'added': real_ip}
+    except Exception as e:
+        return {'error': str(e), 'whitelist': IP_WHITE_LIST}
 
 @app.get("/asr/info")
 async def asr_info():

@@ -203,6 +203,10 @@ class CallDisplayManager {
     this.asrActiveMessageId = null; // 当前活跃句子的 messageId
     this.asrActiveRevision = -1;    // 当前活跃句子的最新 revision
     this.asrMessageMap = new Map(); // messageId -> { text, revision, final }
+    // 增量句子拆分状态：segmentId -> { emitted: 已输出完整句子数量 }
+    this.segmentSplitState = new Map();
+    // 自动滚动控制
+    this._autoScrollEnabled = true;
 
         this.setupWebSocketCallbacks();
         this.setupEventListeners();
@@ -681,6 +685,17 @@ class CallDisplayManager {
                 const data = await response.json();
                 resultElement.textContent = `连接成功！服务状态: ${data.status}`;
                 resultElement.className = 'connection-status success';
+                // 注册白名单
+                try {
+                    const registerUrl = `${protocol}://${host}/whitelist/register`;
+                    const regResp = await fetch(registerUrl);
+                    if (regResp.ok) {
+                        const regData = await regResp.json();
+                        console.log('[Whitelist] added:', regData.added, 'current:', regData.whitelist);
+                    }
+                } catch (e) {
+                    console.warn('Whitelist register failed', e);
+                }
             } else {
                 resultElement.textContent = `连接失败：HTTP ${response.status}`;
                 resultElement.className = 'connection-status error';
@@ -1153,61 +1168,111 @@ class CallDisplayManager {
 
     // 基于 segmentId 的增量气泡更新
     updateSegmentBubble({ segmentId, revision, text, is_final, stable_len, source }) {
-        if (!segmentId || !text) return;
+        if (!segmentId || typeof text !== 'string') return;
         const monitorDisplay = document.getElementById('localMonitorDisplay');
-        if (monitorDisplay && monitorDisplay.style.display === 'none') {
-            this.showLocalMonitorWindow();
-        }
-        let monitorMessages = document.getElementById('monitorMessages');
-        if (!monitorMessages) {
+        if (monitorDisplay && monitorDisplay.style.display === 'none') this.showLocalMonitorWindow();
+        let container = document.getElementById('monitorMessages');
+        if (!container) {
             const mc = document.getElementById('monitorContent') || monitorDisplay;
             if (!mc) return;
-            const wrap = document.createElement('div');
-            wrap.className = 'monitor-messages';
-            wrap.id = 'monitorMessages';
-            mc.appendChild(wrap);
-            monitorMessages = wrap;
+            container = document.createElement('div');
+            container.className = 'monitor-messages';
+            container.id = 'monitorMessages';
+            mc.appendChild(container);
         }
-        let node = monitorMessages.querySelector(`[data-seg="${segmentId}"]`);
+        // 句子切分(包含终止符) 例如: “你好。我很好？”
+        const sentenceRegex = /[^。！？!?]*[。！？!?]/g; // 匹配以终止符结束的完整句子
+        const completed = [];
+        let match;
+        while ((match = sentenceRegex.exec(text)) !== null) {
+            const s = match[0].trim();
+            if (s) completed.push(s);
+        }
+        const pendingTail = text.slice(sentenceRegex.lastIndex); // 未以终止符结束的部分
+        const state = this.segmentSplitState.get(segmentId) || { emitted: 0 };
+        // 输出新增完整句子
+        for (let i = state.emitted; i < completed.length; i++) {
+            const sentence = completed[i];
+            const sid = segmentId + '-s' + i; // 每个完整句子独立 final 气泡
+            this._emitSentenceBubble({ seg: sid, text: sentence, source, final: true, revision });
+        }
+        state.emitted = completed.length;
+        this.segmentSplitState.set(segmentId, state);
+        // 处理未完成部分：只有在非 final 或 final 且确实有尾部时展示
+        if (pendingTail) {
+            // base segment bubble (可被修订) id = segmentId + '-pending'
+            this._emitSentenceBubble({ seg: segmentId + '-pending', text: pendingTail, source, final: !!is_final && !pendingTail.match(/[。！？!?]$/), revision, stable_len, isPartial: !is_final });
+        } else {
+            // 没有尾部 => 移除旧的 pending bubble（如果存在）
+            const oldPending = container.querySelector(`[data-seg="${segmentId}-pending"]`);
+            if (oldPending) oldPending.remove();
+        }
+        // 如果最终且没有 pendingTail 且文本不以标点结束（整段无标点且 final），将整段当作单句
+        if (is_final && completed.length === 0 && !pendingTail) {
+            this._emitSentenceBubble({ seg: segmentId + '-s0', text, source, final: true, revision });
+        }
+        // 限制条数 20
+    this._trimBubbles(container, 20);
+    this._scrollMonitorBottom();
+    }
+
+    _emitSentenceBubble({ seg, text, source, final, revision, stable_len, isPartial }) {
+        if (!text) return;
+        const container = document.getElementById('monitorMessages');
+        if (!container) return;
+        let node = container.querySelector(`[data-seg="${seg}"]`);
         if (!node) {
             node = document.createElement('div');
             node.className = 'segment-bubble';
-            node.setAttribute('data-seg', segmentId);
-            node.setAttribute('data-rev', revision);
-            // 左右对齐
-            const role = source === 'citizen' ? 'citizen' : (source === 'hot-line' ? 'hot-line' : 'citizen');
+            node.setAttribute('data-seg', seg);
+            node.setAttribute('data-rev', revision ?? 0);
+            const role = source === 'hot-line' ? 'hot-line' : 'citizen';
             node.classList.add(role);
             const timeString = new Date().toLocaleTimeString();
             node.innerHTML = `<div class="bubble-text"></div><div class="bubble-meta"><span class="time">${timeString}</span></div>`;
-            monitorMessages.appendChild(node);
+            container.appendChild(node);
         } else {
             const lastRev = parseInt(node.getAttribute('data-rev')||'-1',10);
-            if (revision <= lastRev) {
-                return; // 旧修订忽略
-            }
-            node.setAttribute('data-rev', revision);
+            if (revision != null && revision < lastRev) return; // 不回退
+            if (revision != null) node.setAttribute('data-rev', revision);
         }
         const textEl = node.querySelector('.bubble-text');
         if (textEl) {
-            if (typeof stable_len === 'number' && stable_len > 0 && stable_len < text.length && !is_final) {
+            if (isPartial && typeof stable_len === 'number' && stable_len > 0 && stable_len < text.length) {
                 const stable = text.slice(0, stable_len);
-                const pending = text.slice(stable_len);
-                textEl.innerHTML = `<span class="stable">${stable}</span><span class="pending">${pending}</span>`;
+                const pend = text.slice(stable_len);
+                textEl.innerHTML = `<span class="stable">${stable}</span><span class="pending">${pend}</span>`;
             } else {
                 textEl.textContent = text;
             }
         }
-        if (is_final) {
+        if (final) {
             node.classList.add('final');
-            // 去掉 pending 样式
-            const pendingEl = node.querySelector('.pending');
-            if (pendingEl) pendingEl.classList.remove('pending');
+            const p = node.querySelector('.pending');
+            if (p) p.classList.remove('pending');
         }
-        monitorMessages.scrollTop = monitorMessages.scrollHeight;
-        const maxMessages = 400;
-        while (monitorMessages.children.length > maxMessages) {
-            monitorMessages.removeChild(monitorMessages.firstChild);
+    this._scrollMonitorBottom();
+    }
+
+    _trimBubbles(container, max) {
+        while (container.children.length > max) {
+            const removed = container.firstChild;
+            container.removeChild(removed);
+            console.debug('[BubbleRemovedOverflow]', removed?.getAttribute && removed.getAttribute('data-seg'));
         }
+    }
+
+    _scrollMonitorBottom() {
+        if (!this._autoScrollEnabled) return;
+        const list = document.getElementById('monitorMessages');
+        if (!list) return;
+        // 寻找真正可滚动容器（父级 monitor-content 有 overflow）
+        let target = list;
+        if (list.parentElement && list.parentElement.classList.contains('monitor-content')) {
+            target = list.parentElement;
+        }
+        // 使用 requestAnimationFrame 确保 DOM 更新后再滚动
+        requestAnimationFrame(()=>{ target.scrollTop = target.scrollHeight; });
     }
     
     // 断开本机监听
