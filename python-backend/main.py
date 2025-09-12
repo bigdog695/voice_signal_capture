@@ -64,14 +64,7 @@ def load_funasr_model():
         asr_funasr_model = None
     return asr_funasr_model
 
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时预加载 ASR 模型，避免首次WS建立才去加载造成延迟。"""
-    load_funasr_model()
-    if asr_funasr_model is None:
-        rt_event("asr_model_unavailable_startup")
-    else:
-        rt_event("asr_model_ready_startup")
+ # startup_event 将在 app 定义后再声明
 
 def rt_event(event: str, **fields):
     """结构化事件日志 (单行 JSON)，便于后期集中检索。
@@ -92,6 +85,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def startup_event():
+    """应用启动时预加载 ASR 模型，避免首次WS建立才去加载造成延迟。"""
+    load_funasr_model()
+    if asr_funasr_model is None:
+        rt_event("asr_model_unavailable_startup")
+    else:
+        rt_event("asr_model_ready_startup")
 
 # ================= Chat Data Models & Sample Data =================
 class ChatMessage(BaseModel):
