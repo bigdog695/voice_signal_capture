@@ -27,6 +27,20 @@ log = logging.getLogger(LOG_NAME)
 IP_WHITE_LIST = ["*"]  # 可改为具体 IP 列表，例如: ["192.168.1.10", "192.168.1.11"]
 PRINT_EVERY = 20
 
+# ================= ASR Model Configuration =================
+MODEL_NAME = "paraformer-zh-streaming"
+MODEL_REV = "latest"
+DEVICE = "cpu"  # 可按需改为 "cuda" if torch.cuda.is_available()
+
+# chunk / stride parameters (placeholders adjustable to real model spec)
+CHUNK_SIZE = 16000  # 1s at 16kHz
+STRIDE_SIZE = 1600   # 0.1s frame stride
+ENC_LB = 0
+DEC_LB = 0
+BYTES_PER_FRAME = 3200  # 1600 samples * 2 bytes (int16) when applicable
+
+asr_funasr_model = None  # 模型对象占位（后续需实际加载）
+
 def rt_event(event: str, **fields):
     """结构化事件日志 (单行 JSON)，便于后期集中检索。
     示例: rt_event("asr_result", peer_ip="1.2.3.4", text_len=5)
