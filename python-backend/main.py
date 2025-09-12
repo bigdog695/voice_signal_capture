@@ -4,13 +4,15 @@ import uvicorn
 import json
 import asyncio
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from pydantic import BaseModel
 from datetime import datetime
 import uuid
 import numpy as np
 import logging
 import zmq
+import threading
+import queue
 from binascii import unhexlify
 import scipy.signal
 import io
@@ -419,291 +421,249 @@ def _resample_audio(audio_data, orig_sr, target_sr):
 
 # (去重) 下方原重复 IP_WHITE_LIST/PRINT_EVERY 定义已移除，保持顶部统一配置
 
-async def _process_zmq_voice_data(websocket, connection_state):
-    """使用 PULL + multipart (meta_json, pcm_bytes) 模式消费语音数据并调用 funasr 识别"""
-    if asr_funasr_model is None:
-        log.error("funasr 模型不可用，终止 ZMQ 处理")
-        await websocket.send_text(json.dumps({"type": "asr_error", "error": "ASR model unavailable"}))
-        return
+#############################################
+# 全局监听：单例 ZMQ + ASR 线程 & 广播机制
+#############################################
+LISTENING_CLIENTS: Dict[str, WebSocket] = {}
+ZMQ_THREAD: Optional[threading.Thread] = None
+ZMQ_THREAD_STOP = threading.Event()
+ZMQ_QUEUE: "queue.Queue[dict]" = queue.Queue(maxsize=1000)
+SEQ_COUNTER = 0
+CALL_STATE = {}  # (peer_ip, source) -> {call_id:int, buffer:bytearray, chunks:int, bytes:int}
+CALL_ID_PER_SOURCE = {}
+# 广播协程任务句柄（避免用线程枚举检测）
+BROADCAST_TASK: Optional[asyncio.Task] = None
 
+def _next_call_id(peer_ip, source):
+    key = (peer_ip, source)
+    CALL_ID_PER_SOURCE[key] = CALL_ID_PER_SOURCE.get(key, 1)
+    return CALL_ID_PER_SOURCE[key]
+
+def _rotate_call(peer_ip, source):
+    key = (peer_ip, source)
+    CALL_ID_PER_SOURCE[key] = CALL_ID_PER_SOURCE.get(key, 1) + 1
+    return CALL_ID_PER_SOURCE[key]
+
+def _asr_generate_blocking(pcm_bytes: bytes):
+    # 同步函数供线程调用
+    try:
+        audio_8k = np.frombuffer(pcm_bytes, dtype=np.int16)
+        if audio_8k.size == 0:
+            return None
+        if np.abs(audio_8k).mean() < 5:
+            return None
+        audio_16k = scipy.signal.resample_poly(audio_8k, up=2, down=1).astype(np.float32) / 32768.0
+        result = asr_funasr_model.generate(input=audio_16k)
+        if result and len(result) > 0:
+            txt = result[0].get('text')
+            if txt and txt.strip():
+                return txt.strip()
+    except Exception as e:
+        log.error(f"ASR 同步生成失败: {e}")
+    return None
+
+def _zmq_worker_thread():
+    if asr_funasr_model is None:
+        rt_event("zmq_thread_model_unavailable")
+        return
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.PULL)
     sock.setsockopt(zmq.LINGER, 0)
-    zmq_endpoint = "tcp://0.0.0.0:5555"  # 与 zmq_test.py 缺省保持一致
+    endpoint = "tcp://0.0.0.0:5555"
     try:
-        sock.bind(zmq_endpoint)
-        rt_event("zmq_bind", endpoint=zmq_endpoint)
+        sock.bind(endpoint)
+        rt_event("zmq_thread_bind", endpoint=endpoint)
     except Exception as e:
-        rt_event("zmq_bind_error", error=str(e))
+        rt_event("zmq_thread_bind_error", error=str(e))
         return
-
-    sessions = {}  # (peer_ip, source, call_id) -> state
-    call_ids = {}   # (peer_ip, source) -> current call id
-
-    def get_session(peer_ip, source, start_ts=None):
-        key_ps = (peer_ip, source)
-        call_id = call_ids.get(key_ps, 1)
-        key = (peer_ip, source, call_id)
-        if key not in sessions:
-            sessions[key] = {
-                'buffer': bytearray(),
-                'chunks': 0,
-                'bytes': 0,
-                'first_ts': start_ts,
-                'last_ts': start_ts,
-            }
-        return key, sessions[key]
-
-    def rotate_call(peer_ip, source):
-        key_ps = (peer_ip, source)
-        call_ids[key_ps] = call_ids.get(key_ps, 1) + 1
-
-    async def send_recog(peer_ip, source, call_id, seq, text, meta):
-        """发送结构化识别结果: 兼容旧 listening_text + 新 asr_update"""
-        if not text:
-            return
-        message_id = f"{peer_ip}-{source}-{call_id}-{seq}-{uuid.uuid4().hex[:8]}"
-        base_info = {
-            "peer_ip": peer_ip,
-            "source": source,
-            "call_id": call_id,
-            "sequence": seq,
-            "start_ts": meta.get('start_ts'),
-            "end_ts": meta.get('end_ts'),
-            "timestamp": datetime.now().isoformat(),
-        }
-        # 新结构 (每个ZMQ段视为最终一句)
-        asr_update = {
-            "type": "asr_update",
-            "messageId": message_id,
-            "revision": 0,
-            "text": text,
-            "is_final": True,
-            **base_info,
-        }
-        # 旧结构（保留一段时间，前端迁移后可移除）
-        legacy = {
-            "type": "listening_text",
-            "text": text,
-            **base_info,
-        }
+    global SEQ_COUNTER
+    while not ZMQ_THREAD_STOP.is_set():
         try:
-            await websocket.send_text(json.dumps(asr_update, ensure_ascii=False))
-            await websocket.send_text(json.dumps(legacy, ensure_ascii=False))
-            rt_event("push_result", peer_ip=peer_ip, source=source, call_id=call_id, seq=seq,
-                     msg_id=message_id, text_len=len(text))
-        except Exception as e:
-            rt_event("push_error", error=str(e))
-            connection_state["is_alive"] = False
-
-    def process_asr_chunk(pcm_bytes, meta):
-        try:
-            if not pcm_bytes:
-                return None
-            # 16-bit 8k PCM -> numpy
-            audio_8k = np.frombuffer(pcm_bytes, dtype=np.int16)
-            # 升采样到 16k (与脚本一致: 8k -> 16k up=2 down=1)
-            audio_16k = scipy.signal.resample_poly(audio_8k, up=2, down=1)
-            audio_16k = audio_16k.astype(np.float32) / 32768.0
-            result = asr_funasr_model.generate(input=audio_16k)
-            if result and len(result) > 0:
-                candidate = result[0].get('text')
-                if candidate and candidate.strip():
-                    return candidate.strip()
-        except Exception as e:
-            log.error(f"ASR 分块识别失败: {e}")
-        return None
-
-    seq_counter = 0
-    try:
-        while connection_state["is_alive"]:
             try:
                 meta_raw, pcm = sock.recv_multipart(flags=zmq.NOBLOCK)
             except zmq.Again:
-                await asyncio.sleep(0.01)
+                time.sleep(0.01)
                 continue
-            except Exception as e:
-                log.error(f"ZMQ 收包错误: {e}")
-                await asyncio.sleep(0.1)
-                continue
-
-            try:
-                meta = json.loads(meta_raw.decode('utf-8'))
-            except Exception as e:
-                rt_event("meta_parse_error", error=str(e))
-                continue
-
+            meta = json.loads(meta_raw.decode('utf-8'))
             peer_ip = meta.get('peer_ip', 'unknown')
             if IP_WHITE_LIST and IP_WHITE_LIST != ["*"] and peer_ip not in IP_WHITE_LIST:
-                # 白名单过滤
                 continue
             source = meta.get('source', 'unknown')
             start_ts = meta.get('start_ts')
             end_ts = meta.get('end_ts')
             is_finished = bool(meta.get('IsFinished', False))
-
-            key, sess = get_session(peer_ip, source, start_ts)
-
+            key = (peer_ip, source)
+            st = CALL_STATE.get(key)
+            if st is None:
+                st = {
+                    'call_id': _next_call_id(peer_ip, source),
+                    'buffer': bytearray(),
+                    'chunks': 0,
+                    'bytes': 0,
+                    'first_ts': start_ts,
+                }
+                CALL_STATE[key] = st
             if pcm:
-                sess['buffer'].extend(pcm)
-                sess['bytes'] += len(pcm)
-                sess['chunks'] += 1
-                if sess['first_ts'] is None:
-                    sess['first_ts'] = start_ts
-                if end_ts is not None:
-                    sess['last_ts'] = end_ts
-
-                # 逐块识别 (模仿脚本实时)
-                seq_counter += 1
-                text = process_asr_chunk(pcm, meta)
-                if text:
-                    rt_event("asr_result", peer_ip=peer_ip, source=source, call_id=key[2],
-                             seq=seq_counter, text=text)
-                    await send_recog(peer_ip, source, key[2], seq_counter, text, meta)
-
-            if sess['chunks'] % PRINT_EVERY == 0:
-                rt_event("chunk_progress", peer_ip=peer_ip, source=source, call_id=key[2],
-                         chunks=sess['chunks'], bytes=sess['bytes'])
-
+                st['buffer'].extend(pcm)
+                st['chunks'] += 1
+                st['bytes'] += len(pcm)
+                SEQ_COUNTER += 1
+                txt = _asr_generate_blocking(pcm)
+                if txt:
+                    evt = {
+                        'evt': 'asr_result_thread',
+                        'peer_ip': peer_ip,
+                        'source': source,
+                        'call_id': st['call_id'],
+                        'seq': SEQ_COUNTER,
+                        'text': txt,
+                        'start_ts': start_ts,
+                        'end_ts': end_ts,
+                        'wall_ts': datetime.utcnow().isoformat() + 'Z'
+                    }
+                    try:
+                        ZMQ_QUEUE.put(evt, timeout=0.5)
+                    except queue.Full:
+                        rt_event('queue_full_drop', seq=SEQ_COUNTER)
+            if st['chunks'] % PRINT_EVERY == 0:
+                rt_event('chunk_progress_thread', peer_ip=peer_ip, source=source, call_id=st['call_id'],
+                         chunks=st['chunks'], bytes=st['bytes'])
             if is_finished:
-                dur_sec = (len(sess['buffer']) / 2) / 8000.0
-                rt_event("call_finished", peer_ip=peer_ip, source=source, call_id=key[2],
-                         chunks=sess['chunks'], bytes=sess['bytes'], duration_sec=round(dur_sec,2))
-                del sessions[key]
-                rotate_call(peer_ip, source)
-                # 通知前端通话结束
-                try:
-                    await websocket.send_text(json.dumps({
-                        "type": "call_finished",
-                        "peer_ip": peer_ip,
-                        "source": source,
-                        "call_id": key[2],
-                        "timestamp": datetime.now().isoformat(),
-                    }))
-                except Exception:
-                    pass
-                # 结束一次后退出（与脚本行为保持：收到结束后可停止）
-                break
-
-            if asyncio.current_task().cancelled():
-                rt_event("zmq_task_cancel_requested")
-                break
-
-    except asyncio.CancelledError:
-        rt_event("zmq_task_cancelled")
-    finally:
-        try:
-            sock.close(0)
-            ctx.term()
+                dur_sec = (len(st['buffer'])/2)/8000.0
+                rt_event('call_finished_thread', peer_ip=peer_ip, source=source, call_id=st['call_id'],
+                         chunks=st['chunks'], bytes=st['bytes'], duration_sec=round(dur_sec,2))
+                _rotate_call(peer_ip, source)
+                del CALL_STATE[key]
         except Exception as e:
-            rt_event("zmq_close_error", error=str(e))
-        rt_event("zmq_task_stopped")
+            rt_event('zmq_thread_error', error=str(e))
+            time.sleep(0.05)
+    try:
+        sock.close(0)
+        ctx.term()
+    except Exception:
+        pass
+    rt_event('zmq_thread_exit')
+
+async def _broadcast_loop():
+    global BROADCAST_TASK
+    rt_event('broadcast_loop_start')
+    try:
+        loop = asyncio.get_event_loop()
+        while not ZMQ_THREAD_STOP.is_set():
+            try:
+                evt = await loop.run_in_executor(None, ZMQ_QUEUE.get, True, 0.5)
+            except queue.Empty:
+                continue
+            t_start = time.time()
+            # 构造消息
+            message_id = f"{evt['peer_ip']}-{evt['source']}-{evt['call_id']}-{evt['seq']}-{uuid.uuid4().hex[:8]}"
+            base_info = {
+                'peer_ip': evt['peer_ip'],
+                'source': evt['source'],
+                'call_id': evt['call_id'],
+                'sequence': evt['seq'],
+                'start_ts': evt.get('start_ts'),
+                'end_ts': evt.get('end_ts'),
+                'timestamp': evt.get('wall_ts')
+            }
+            asr_update = {
+                'type': 'asr_update',
+                'messageId': message_id,
+                'revision': 0,
+                'text': evt['text'],
+                'is_final': True,
+                **base_info
+            }
+            # 并发发送（单一结构化消息）
+            tasks: List[asyncio.Task] = []
+            for cid, ws in list(LISTENING_CLIENTS.items()):
+                tasks.append(asyncio.create_task(ws.send_text(json.dumps(asr_update, ensure_ascii=False))))
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                problem_clients: Set[str] = set()
+                keys_snapshot = list(LISTENING_CLIENTS.keys())
+                for idx, res in enumerate(results):
+                    if isinstance(res, Exception):
+                        if idx < len(keys_snapshot):
+                            problem_clients.add(keys_snapshot[idx])
+                for pc in problem_clients:
+                    LISTENING_CLIENTS.pop(pc, None)
+                    rt_event('client_removed_send_fail', client_id=pc)
+            dur_ms = int((time.time() - t_start)*1000)
+            rt_event('broadcast_push', clients=len(LISTENING_CLIENTS), seq=evt['seq'], text_len=len(evt['text']), duration_ms=dur_ms)
+    except asyncio.CancelledError:
+        rt_event('broadcast_loop_cancel')
+    except Exception as e:
+        rt_event('broadcast_error', error=str(e))
+    finally:
+        rt_event('broadcast_loop_end')
+        BROADCAST_TASK = None
+
+def ensure_zmq_thread_started():
+    global ZMQ_THREAD
+    if ZMQ_THREAD and ZMQ_THREAD.is_alive():
+        return
+    ZMQ_THREAD_STOP.clear()
+    ZMQ_THREAD = threading.Thread(target=_zmq_worker_thread, name='ZMQ-ASR-Thread', daemon=True)
+    ZMQ_THREAD.start()
+    rt_event('zmq_thread_started')
 
 @app.websocket("/listening")
 async def websocket_listening_endpoint(websocket: WebSocket):
-    """本机通话监听WebSocket端点 - 真实ZMQ数据源 + ASR识别"""
+    """本机通话监听WebSocket端点 - 使用单例ZMQ线程广播"""
     await websocket.accept()
     client_id = uuid.uuid4().hex[:8]
-    rt_event("client_connect", client_id=client_id, path="/listening")
-    
-    # 创建共享的连接状态对象
-    connection_state = {
-        "is_alive": True,
-        "connected_at": time.time()
-    }
-    
-    zmq_task = None
-    
-    try:
-        # 发送双格式欢迎：纯文本(兼容旧前端) + JSON 结构化
-        await websocket.send_text("监听服务已连接，正在等待通话数据...")
-        await websocket.send_text(json.dumps({
-            "type": "listening_ready",
-            "message": "监听服务已连接，正在等待通话数据...",
-            "timestamp": datetime.now().isoformat()
-        }, ensure_ascii=False))
-        rt_event("client_ready", client_id=client_id)
-
-        # 启动后台ZMQ消费任务（修正变量命名：之前使用 task 导致后续无法检查状态）
-        zmq_task = asyncio.create_task(_process_zmq_voice_data(websocket, connection_state))
-        while connection_state["is_alive"]:
+    LISTENING_CLIENTS[client_id] = websocket
+    ensure_zmq_thread_started()
+    # 启动广播循环（单例，使用任务句柄判断）
+    global BROADCAST_TASK
+    if BROADCAST_TASK is None or BROADCAST_TASK.done():
+        BROADCAST_TASK = asyncio.create_task(_broadcast_loop())
+    rt_event('client_connect', client_id=client_id, total_clients=len(LISTENING_CLIENTS))
+    connected_at = time.time()
+    # 发送欢迎
+    await websocket.send_text("监听服务已连接，正在等待通话数据...")
+    await websocket.send_text(json.dumps({
+        'type': 'listening_ready',
+        'message': '监听服务已连接，正在等待通话数据...',
+        'timestamp': datetime.now().isoformat()
+    }, ensure_ascii=False))
+    # 心跳任务（服务器每1s推一次）
+    async def server_heartbeat():
+        while True:
             try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
-                message_data = json.loads(data)
-
-                if message_data.get("type") == "ping":
-                    await websocket.send_text(json.dumps({
-                        "type": "pong",
-                        "timestamp": datetime.now().isoformat()
-                    }))
-                    rt_event("client_heartbeat", client_id=client_id)
-                elif message_data.get("type") == "stop_listening":
-                    connection_state["is_alive"] = False
-                    if zmq_task and not zmq_task.done():
-                        zmq_task.cancel()
-                    await websocket.send_text("监听服务已停止")
-                    rt_event("client_stop_request", client_id=client_id)
-                    break
-                
+                await websocket.send_text(json.dumps({'type':'server_heartbeat','ts': datetime.utcnow().isoformat()+'Z'}))
+                await asyncio.sleep(1.0)
+            except Exception:
+                break
+    hb_task = asyncio.create_task(server_heartbeat())
+    try:
+        while True:
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
             except asyncio.TimeoutError:
-                # 超时是正常的，继续循环
-                # 检查ZMQ任务是否还在运行
-                if zmq_task and zmq_task.done():
-                    # ZMQ任务已结束，检查是否有异常
-                    try:
-                        await zmq_task  # 获取可能的异常
-                    except asyncio.CancelledError:
-                        log.info("ZMQ任务已被取消")
-                    except Exception as e:
-                        log.error(f"ZMQ任务异常结束: {e}")
-                    # ZMQ任务结束，退出监听循环
-                    connection_state["is_alive"] = False
-                    break
-                # 可选：向前端发送心跳（避免长时间无输出用户以为卡住）
-                try:
-                    await websocket.send_text(json.dumps({
-                        "type": "listening_heartbeat",
-                        "ts": datetime.now().isoformat()
-                    }))
-                except Exception:
-                    pass
-                continue
-            except json.JSONDecodeError:
-                # 如果不是JSON消息，忽略
                 continue
             except WebSocketDisconnect:
-                # WebSocket断开，立即通知ZMQ任务
-                rt_event("client_ws_disconnect", client_id=client_id)
-                connection_state["is_alive"] = False
                 break
-        
-    except WebSocketDisconnect:
-        rt_event("client_disconnect", client_id=client_id)
-        connection_state["is_alive"] = False
-    except Exception as e:
-        rt_event("client_error", client_id=client_id, error=str(e))
-        connection_state["is_alive"] = False
-        try:
-            await websocket.close(code=1011, reason="Listening service error")
-        except Exception as close_e:
-            rt_event("client_close_error", client_id=client_id, error=str(close_e))
-    finally:
-        # 确保连接状态被标记为断开
-        connection_state["is_alive"] = False
-
-        # 确保ZMQ任务被取消
-        if zmq_task and not zmq_task.done():
-            rt_event("zmq_task_cancelling", client_id=client_id)
-            zmq_task.cancel()
-            try:
-                await asyncio.wait_for(zmq_task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                rt_event("zmq_task_cancel_wait_done")
             except Exception as e:
-                rt_event("zmq_task_cancel_error", error=str(e))
-
-        connection_duration = time.time() - connection_state["connected_at"]
-        rt_event("client_session_end", client_id=client_id, duration_sec=round(connection_duration,2))
+                rt_event('client_recv_error', client_id=client_id, error=str(e))
+                break
+            # 处理客户端消息
+            try:
+                msg = json.loads(data)
+            except Exception:
+                continue
+            mtype = msg.get('type')
+            if mtype == 'ping':
+                await websocket.send_text(json.dumps({'type':'pong','ts': datetime.utcnow().isoformat()+'Z'}))
+                rt_event('client_ping', client_id=client_id)
+            elif mtype == 'stop_listening':
+                await websocket.send_text(json.dumps({'type':'stopped','ts': datetime.utcnow().isoformat()+'Z'}))
+                break
+    finally:
+        hb_task.cancel()
+        LISTENING_CLIENTS.pop(client_id, None)
+        rt_event('client_disconnect', client_id=client_id, duration_sec=round(time.time()-connected_at,2), remaining=len(LISTENING_CLIENTS))
 
 if __name__ == "__main__":
     log.info("========================================")

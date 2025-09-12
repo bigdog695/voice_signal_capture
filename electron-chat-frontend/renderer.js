@@ -1079,20 +1079,25 @@ class CallDisplayManager {
             this._log('WebSocket OPEN');
             this.isMonitoring = true;
             this.updateMonitorStatus('已连接', true);
+            // 启动客户端心跳（1s）
+            if (this._monitorHeartbeatTimer) clearInterval(this._monitorHeartbeatTimer);
+            this._monitorHeartbeatTimer = setInterval(() => {
+                try {
+                    if (this.monitorWs && this.monitorWs.readyState === WebSocket.OPEN) {
+                        this.monitorWs.send(JSON.stringify({ type: 'ping', ts: new Date().toISOString() }));
+                        this._log('TX ping');
+                    }
+                } catch (e) { /* ignore */ }
+            }, 1000);
         };
         
         this.monitorWs.onmessage = (event) => {
-            const raw = event.data;
-            let parsed = null;
             try {
-                parsed = JSON.parse(raw);
-            } catch (_) { /* ignore */ }
-            if (parsed) {
+                const parsed = JSON.parse(event.data);
                 this._log('RX', parsed.type, parsed.text || parsed.message || '');
                 this.handleMonitorMessage(parsed);
-            } else {
-                this._log('RX (plain)', raw.slice(0,120));
-                this.addMonitorMessage(raw);
+            } catch (e) {
+                // 忽略非JSON（后端现在只发结构化）
             }
         };
         
@@ -1100,11 +1105,19 @@ class CallDisplayManager {
             this._log('WebSocket CLOSE', e.code, e.reason);
             this.isMonitoring = false;
             this.updateMonitorStatus('连接断开', false);
+            if (this._monitorHeartbeatTimer) {
+                clearInterval(this._monitorHeartbeatTimer);
+                this._monitorHeartbeatTimer = null;
+            }
         };
         
         this.monitorWs.onerror = (error) => {
             this._log('WebSocket ERROR', error);
             this.updateMonitorStatus('连接错误', false);
+            if (this._monitorHeartbeatTimer) {
+                clearInterval(this._monitorHeartbeatTimer);
+                this._monitorHeartbeatTimer = null;
+            }
         };
     }
     
@@ -1124,43 +1137,23 @@ class CallDisplayManager {
             } catch (e) { /* ignore */ }
         }
         
-        if (data.type === 'listening_text') {
-            this._log('handle listening_text', data.text);
-            this.addMonitorMessage(data.text);
-        } else if (data.type === 'asr_update') {
+    if (data.type === 'asr_update') {
             // 新结构化监听结果
             const { messageId, text, is_final, revision } = data;
             this._log('handle asr_update', messageId, revision, is_final, text);
             this.addMonitorStructuredMessage(messageId, text, is_final, revision);
         } else if (data.type === 'status') {
             this._log('status', data.message);
+        } else if (data.type === 'server_heartbeat') {
+            this._log('RX server_heartbeat');
+        } else if (data.type === 'pong') {
+            this._log('RX pong');
         } else {
             this._log('unknown message type', data.type);
         }
     }
     
-    // 添加监听消息到界面
-    addMonitorMessage(text) {
-        this._log('UI append listening_text (append mode)', (text||'').slice(0,60));
-        const monitorMessages = document.getElementById('monitorMessages');
-        if (!monitorMessages) return;
-        const now = new Date();
-        const timeString = now.toLocaleTimeString();
-        const node = document.createElement('div');
-        node.className = 'monitor-message final';
-        node.innerHTML = `
-            <div class="monitor-message-text"></div>
-            <div class="monitor-message-time">${timeString}</div>
-        `;
-        const textEl = node.querySelector('.monitor-message-text');
-        if (textEl) textEl.textContent = text || '';
-        monitorMessages.appendChild(node);
-        const maxMessages = 200;
-        while (monitorMessages.children.length > maxMessages) {
-            monitorMessages.removeChild(monitorMessages.firstChild);
-        }
-        monitorMessages.scrollTop = monitorMessages.scrollHeight;
-    }
+    // (legacy listening_text 已移除)
 
     // 新增：结构化监听消息（句子级，不做增量修订，只展示最终）
     addMonitorStructuredMessage(messageId, text, isFinal, revision) {
