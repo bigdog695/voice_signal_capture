@@ -1558,3 +1558,34 @@ body {
     border-radius: 4px;
     border: 1px solid rgba(59, 130, 246, 0.2);
 }
+
+/* === 增量段气泡样式 === */
+.segment-bubble {
+    max-width: 70%;
+    padding: 10px 14px;
+    border-radius: 14px;
+    font-size: 14px;
+    line-height: 1.5;
+    position: relative;
+    word-break: break-word;
+    animation: messageSlideIn 0.25s ease;
+}
+.segment-bubble.citizen { /* 左侧白底 */
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    align-self: flex-start;
+    color: #1e293b;
+}
+.segment-bubble.hot-line { /* 右侧绿色 */
+    background: #10b981;
+    color: #ffffff;
+    align-self: flex-end;
+    border: 1px solid #0d9468;
+}
+.segment-bubble.final { box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+.segment-bubble .bubble-text { white-space: pre-wrap; }
+.segment-bubble .stable { font-weight: 500; }
+.segment-bubble .pending { opacity: 0.6; }
+.segment-bubble.hot-line .pending { opacity: 0.75; }
+.segment-bubble .bubble-meta { margin-top: 4px; font-size: 11px; opacity: 0.55; }
+

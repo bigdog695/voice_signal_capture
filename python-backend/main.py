@@ -434,6 +434,111 @@ CALL_ID_PER_SOURCE = {}
 # 广播协程任务句柄（避免用线程枚举检测）
 BROADCAST_TASK: Optional[asyncio.Task] = None
 
+# === 增量分句流式识别状态 ===
+# key: (peer_ip, source, call_id) -> state dict
+INCREMENTAL_STREAM_STATE: Dict[tuple, dict] = {}
+
+def _new_segment_state():
+    return {
+        'segment_id': uuid.uuid4().hex[:10],  # 当前句子ID
+        'stable_text': '',     # 已稳定前缀
+        'pending_text': '',    # 易变后缀
+        'last_full_text': '',  # 上一次模型返回全文(用于diff)
+        'last_emit_text': '',  # 上一次发送给前端的全文
+        'revision': -1,        # 已发送修订号
+        'created_ts': time.time(),
+        'last_update_ts': time.time(),
+    }
+
+BOUNDARY_PUNCT = set(list("。！？!?;；，,、."))  # 用于回退边界
+
+def _longest_common_prefix(a: str, b: str) -> int:
+    m = min(len(a), len(b))
+    i = 0
+    while i < m and a[i] == b[i]:
+        i += 1
+    return i
+
+def _boundary_backtrack(text: str) -> int:
+    """在 text 尾部回退到安全边界(标点或长度阈值)"""
+    if not text:
+        return 0
+    # 优先寻找最右侧标点
+    for i in range(len(text)-1, -1, -1):
+        if text[i] in BOUNDARY_PUNCT:
+            return i+1
+    # 若无标点且长度>15 视作全部稳定
+    if len(text) > 15:
+        return len(text)
+    return 0
+
+def _process_incremental(peer_ip: str, source: str, call_id: int, new_text: str):
+    """根据新文本产生增量/修订事件字典或 None (不发送)。"""
+    key = (peer_ip, source, call_id)
+    st = INCREMENTAL_STREAM_STATE.get(key)
+    if st is None:
+        st = _new_segment_state()
+        INCREMENTAL_STREAM_STATE[key] = st
+    st['last_update_ts'] = time.time()
+    old_model_full = st['last_full_text']
+    if new_text == old_model_full:
+        return None
+    # 计算与旧全文公共前缀
+    lcp_len = _longest_common_prefix(old_model_full, new_text)
+    # 在公共前缀基础上做边界回退
+    boundary = _boundary_backtrack(new_text[:lcp_len])
+    stable_prefix = new_text[:boundary]
+    pending = new_text[boundary:]
+    # 若 stable_prefix 比已有稳定多 -> 更新
+    st['stable_text'] = stable_prefix
+    st['pending_text'] = pending
+    st['last_full_text'] = new_text
+    full_emit = stable_prefix + pending
+    if full_emit == st['last_emit_text']:
+        return None
+    st['revision'] += 1
+    st['last_emit_text'] = full_emit
+    evt = {
+        'evt': 'asr_incremental',
+        'peer_ip': peer_ip,
+        'source': source,
+        'call_id': call_id,
+        'segmentId': st['segment_id'],
+        'revision': st['revision'],
+        'text': full_emit,
+        'stable_len': len(stable_prefix),
+        'is_final': False,
+        'wall_ts': datetime.utcnow().isoformat()+'Z'
+    }
+    return evt
+
+def _finalize_segment(peer_ip: str, source: str, call_id: int):
+    key = (peer_ip, source, call_id)
+    st = INCREMENTAL_STREAM_STATE.get(key)
+    if not st:
+        return None
+    if st['last_emit_text'] == '':
+        # 空段直接丢弃
+        INCREMENTAL_STREAM_STATE[key] = _new_segment_state()
+        return None
+    # 发送最终事件
+    st['revision'] += 1
+    final_evt = {
+        'evt': 'asr_incremental',
+        'peer_ip': peer_ip,
+        'source': source,
+        'call_id': call_id,
+        'segmentId': st['segment_id'],
+        'revision': st['revision'],
+        'text': st['last_emit_text'],
+        'stable_len': len(st['last_emit_text']),
+        'is_final': True,
+        'wall_ts': datetime.utcnow().isoformat()+'Z'
+    }
+    # 重置新段
+    INCREMENTAL_STREAM_STATE[key] = _new_segment_state()
+    return final_evt
+
 def _next_call_id(peer_ip, source):
     key = (peer_ip, source)
     CALL_ID_PER_SOURCE[key] = CALL_ID_PER_SOURCE.get(key, 1)
@@ -510,25 +615,31 @@ def _zmq_worker_thread():
                 SEQ_COUNTER += 1
                 txt = _asr_generate_blocking(pcm)
                 if txt:
-                    evt = {
-                        'evt': 'asr_result_thread',
-                        'peer_ip': peer_ip,
-                        'source': source,
-                        'call_id': st['call_id'],
-                        'seq': SEQ_COUNTER,
-                        'text': txt,
-                        'start_ts': start_ts,
-                        'end_ts': end_ts,
-                        'wall_ts': datetime.utcnow().isoformat() + 'Z'
-                    }
-                    try:
-                        ZMQ_QUEUE.put(evt, timeout=0.5)
-                    except queue.Full:
-                        rt_event('queue_full_drop', seq=SEQ_COUNTER)
+                    # 增量处理
+                    inc_evt = _process_incremental(peer_ip, source, st['call_id'], txt)
+                    if inc_evt:
+                        inc_evt['seq'] = SEQ_COUNTER
+                        inc_evt['start_ts'] = start_ts
+                        inc_evt['end_ts'] = end_ts
+                        try:
+                            ZMQ_QUEUE.put(inc_evt, timeout=0.5)
+                        except queue.Full:
+                            rt_event('queue_full_drop', seq=SEQ_COUNTER, segmentId=inc_evt.get('segmentId'))
             if st['chunks'] % PRINT_EVERY == 0:
                 rt_event('chunk_progress_thread', peer_ip=peer_ip, source=source, call_id=st['call_id'],
                          chunks=st['chunks'], bytes=st['bytes'])
             if is_finished:
+                # finalize 当前段
+                final_evt = _finalize_segment(peer_ip, source, st['call_id'])
+                if final_evt:
+                    SEQ_COUNTER += 1
+                    final_evt['seq'] = SEQ_COUNTER
+                    final_evt['start_ts'] = start_ts
+                    final_evt['end_ts'] = end_ts
+                    try:
+                        ZMQ_QUEUE.put(final_evt, timeout=0.5)
+                    except queue.Full:
+                        rt_event('queue_full_drop', seq=SEQ_COUNTER, segmentId=final_evt.get('segmentId'), final=True)
                 dur_sec = (len(st['buffer'])/2)/8000.0
                 rt_event('call_finished_thread', peer_ip=peer_ip, source=source, call_id=st['call_id'],
                          chunks=st['chunks'], bytes=st['bytes'], duration_sec=round(dur_sec,2))
@@ -556,24 +667,40 @@ async def _broadcast_loop():
                 continue
             t_start = time.time()
             # 构造消息
-            message_id = f"{evt['peer_ip']}-{evt['source']}-{evt['call_id']}-{evt['seq']}-{uuid.uuid4().hex[:8]}"
-            base_info = {
-                'peer_ip': evt['peer_ip'],
-                'source': evt['source'],
-                'call_id': evt['call_id'],
-                'sequence': evt['seq'],
-                'start_ts': evt.get('start_ts'),
-                'end_ts': evt.get('end_ts'),
-                'timestamp': evt.get('wall_ts')
-            }
-            asr_update = {
-                'type': 'asr_update',
-                'messageId': message_id,
-                'revision': 0,
-                'text': evt['text'],
-                'is_final': True,
-                **base_info
-            }
+            # evt 来自增量：区分 is_final / partial
+            # 兼容：若无 segmentId 视为旧格式
+            if evt.get('evt') == 'asr_incremental':
+                asr_update = {
+                    'type': 'asr_update',
+                    'segmentId': evt.get('segmentId'),
+                    'revision': evt.get('revision', 0),
+                    'text': evt.get('text', ''),
+                    'stable_len': evt.get('stable_len', 0),
+                    'is_final': evt.get('is_final', False),
+                    'peer_ip': evt.get('peer_ip'),
+                    'source': evt.get('source'),
+                    'call_id': evt.get('call_id'),
+                    'sequence': evt.get('seq'),
+                    'start_ts': evt.get('start_ts'),
+                    'end_ts': evt.get('end_ts'),
+                    'timestamp': evt.get('wall_ts')
+                }
+            else:
+                asr_update = {
+                    'type': 'asr_update',
+                    'segmentId': f"legacy-{evt['seq']}",
+                    'revision': 0,
+                    'text': evt.get('text',''),
+                    'stable_len': len(evt.get('text','')),
+                    'is_final': True,
+                    'peer_ip': evt.get('peer_ip'),
+                    'source': evt.get('source'),
+                    'call_id': evt.get('call_id'),
+                    'sequence': evt.get('seq'),
+                    'start_ts': evt.get('start_ts'),
+                    'end_ts': evt.get('end_ts'),
+                    'timestamp': evt.get('wall_ts')
+                }
             # 并发发送（单一结构化消息）
             tasks: List[asyncio.Task] = []
             for cid, ws in list(LISTENING_CLIENTS.items()):

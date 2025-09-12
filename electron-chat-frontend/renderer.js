@@ -238,10 +238,7 @@ class CallDisplayManager {
             this.disconnectLocalMonitor();
         });
 
-        // 查看活跃通话按钮
-        document.getElementById('viewActiveCallBtn').addEventListener('click', () => {
-            this.showLiveCallWindow();
-        });
+    // (已移除活跃通话按钮)
 
         // 最小化实时通话窗口
         document.getElementById('minimizeLiveCallBtn').addEventListener('click', () => {
@@ -1138,10 +1135,9 @@ class CallDisplayManager {
         }
         
     if (data.type === 'asr_update') {
-            // 新结构化监听结果
-            const { messageId, text, is_final, revision } = data;
-            this._log('handle asr_update', messageId, revision, is_final, text);
-            this.addMonitorStructuredMessage(messageId, text, is_final, revision);
+            const { segmentId, revision, text, is_final, stable_len, source } = data;
+            this._log('handle asr_update', segmentId, revision, is_final, text);
+            this.updateSegmentBubble({ segmentId, revision, text, is_final, stable_len, source });
         } else if (data.type === 'status') {
             this._log('status', data.message);
         } else if (data.type === 'server_heartbeat') {
@@ -1155,28 +1151,60 @@ class CallDisplayManager {
     
     // (legacy listening_text 已移除)
 
-    // 新增：结构化监听消息（句子级，不做增量修订，只展示最终）
-    addMonitorStructuredMessage(messageId, text, isFinal, revision) {
-        if (!text) return;
-        const monitorMessages = document.getElementById('monitorMessages');
-        if (!monitorMessages) return;
-        // 每个 messageId 固定一条
-        let node = monitorMessages.querySelector(`[data-mid="${messageId}"]`);
+    // 基于 segmentId 的增量气泡更新
+    updateSegmentBubble({ segmentId, revision, text, is_final, stable_len, source }) {
+        if (!segmentId || !text) return;
+        const monitorDisplay = document.getElementById('localMonitorDisplay');
+        if (monitorDisplay && monitorDisplay.style.display === 'none') {
+            this.showLocalMonitorWindow();
+        }
+        let monitorMessages = document.getElementById('monitorMessages');
+        if (!monitorMessages) {
+            const mc = document.getElementById('monitorContent') || monitorDisplay;
+            if (!mc) return;
+            const wrap = document.createElement('div');
+            wrap.className = 'monitor-messages';
+            wrap.id = 'monitorMessages';
+            mc.appendChild(wrap);
+            monitorMessages = wrap;
+        }
+        let node = monitorMessages.querySelector(`[data-seg="${segmentId}"]`);
         if (!node) {
             node = document.createElement('div');
-            node.className = 'monitor-message';
-            node.setAttribute('data-mid', messageId);
+            node.className = 'segment-bubble';
+            node.setAttribute('data-seg', segmentId);
+            node.setAttribute('data-rev', revision);
+            // 左右对齐
+            const role = source === 'citizen' ? 'citizen' : (source === 'hot-line' ? 'hot-line' : 'citizen');
+            node.classList.add(role);
             const timeString = new Date().toLocaleTimeString();
-            node.innerHTML = `<div class="monitor-message-text"></div><div class="monitor-message-time">${timeString}</div>`;
+            node.innerHTML = `<div class="bubble-text"></div><div class="bubble-meta"><span class="time">${timeString}</span></div>`;
             monitorMessages.appendChild(node);
+        } else {
+            const lastRev = parseInt(node.getAttribute('data-rev')||'-1',10);
+            if (revision <= lastRev) {
+                return; // 旧修订忽略
+            }
+            node.setAttribute('data-rev', revision);
         }
-        const textEl = node.querySelector('.monitor-message-text');
-        if (textEl) textEl.textContent = text;
-        if (isFinal) node.classList.add('final');
-        // 滚动
+        const textEl = node.querySelector('.bubble-text');
+        if (textEl) {
+            if (typeof stable_len === 'number' && stable_len > 0 && stable_len < text.length && !is_final) {
+                const stable = text.slice(0, stable_len);
+                const pending = text.slice(stable_len);
+                textEl.innerHTML = `<span class="stable">${stable}</span><span class="pending">${pending}</span>`;
+            } else {
+                textEl.textContent = text;
+            }
+        }
+        if (is_final) {
+            node.classList.add('final');
+            // 去掉 pending 样式
+            const pendingEl = node.querySelector('.pending');
+            if (pendingEl) pendingEl.classList.remove('pending');
+        }
         monitorMessages.scrollTop = monitorMessages.scrollHeight;
-        // 限制数量
-        const maxMessages = 200;
+        const maxMessages = 400;
         while (monitorMessages.children.length > maxMessages) {
             monitorMessages.removeChild(monitorMessages.firstChild);
         }
