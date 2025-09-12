@@ -1113,6 +1113,16 @@ class CallDisplayManager {
         console.log('=== 处理JSON监听消息 ===');
         console.log('数据类型:', data.type);
         console.log('完整数据:', data);
+        // 计算简单端到端延迟（若后端提供 timestamp）
+        if (data.timestamp) {
+            try {
+                const serverMs = new Date(data.timestamp).getTime();
+                const diff = Date.now() - serverMs;
+                if (diff > 500) {
+                    this._log('latency(ms)', diff, 'type', data.type);
+                }
+            } catch (e) { /* ignore */ }
+        }
         
         if (data.type === 'listening_text') {
             this._log('handle listening_text', data.text);
@@ -1131,47 +1141,25 @@ class CallDisplayManager {
     
     // 添加监听消息到界面
     addMonitorMessage(text) {
-    this._log('UI append streaming text', (text||'').slice(0,60));
-        
+        this._log('UI append listening_text (append mode)', (text||'').slice(0,60));
         const monitorMessages = document.getElementById('monitorMessages');
-        if (!monitorMessages) {
-            console.log('找不到 monitorMessages 元素');
-            return;
-        }
-        
-        // 查找当前活跃的流式消息元素
-        let currentStreamElement = monitorMessages.querySelector('.monitor-message.streaming');
-        
-        if (!currentStreamElement) {
-            // 如果没有活跃的流式消息，创建新的
-            currentStreamElement = document.createElement('div');
-            currentStreamElement.className = 'monitor-message streaming';
-            
-            const now = new Date();
-            const timeString = now.toLocaleTimeString();
-            
-            currentStreamElement.innerHTML = `
-                <div class="monitor-message-text"></div>
-                <div class="monitor-message-time">${timeString}</div>
-            `;
-            
-            monitorMessages.appendChild(currentStreamElement);
-        }
-        
-        // 更新流式消息的文本内容
-        const textElement = currentStreamElement.querySelector('.monitor-message-text');
-        if (textElement) {
-            textElement.textContent = text;
-        }
-        
-        // 自动滚动到最新消息
-        monitorMessages.scrollTop = monitorMessages.scrollHeight;
-        
-        // 限制消息数量
-        const maxMessages = 50;
-        if (monitorMessages.children.length > maxMessages) {
+        if (!monitorMessages) return;
+        const now = new Date();
+        const timeString = now.toLocaleTimeString();
+        const node = document.createElement('div');
+        node.className = 'monitor-message final';
+        node.innerHTML = `
+            <div class="monitor-message-text"></div>
+            <div class="monitor-message-time">${timeString}</div>
+        `;
+        const textEl = node.querySelector('.monitor-message-text');
+        if (textEl) textEl.textContent = text || '';
+        monitorMessages.appendChild(node);
+        const maxMessages = 200;
+        while (monitorMessages.children.length > maxMessages) {
             monitorMessages.removeChild(monitorMessages.firstChild);
         }
+        monitorMessages.scrollTop = monitorMessages.scrollHeight;
     }
 
     // 新增：结构化监听消息（句子级，不做增量修订，只展示最终）

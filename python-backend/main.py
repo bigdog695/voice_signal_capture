@@ -615,10 +615,17 @@ async def websocket_listening_endpoint(websocket: WebSocket):
     zmq_task = None
     
     try:
+        # 发送双格式欢迎：纯文本(兼容旧前端) + JSON 结构化
         await websocket.send_text("监听服务已连接，正在等待通话数据...")
+        await websocket.send_text(json.dumps({
+            "type": "listening_ready",
+            "message": "监听服务已连接，正在等待通话数据...",
+            "timestamp": datetime.now().isoformat()
+        }, ensure_ascii=False))
         rt_event("client_ready", client_id=client_id)
 
-        task = asyncio.create_task(_process_zmq_voice_data(websocket, connection_state))
+        # 启动后台ZMQ消费任务（修正变量命名：之前使用 task 导致后续无法检查状态）
+        zmq_task = asyncio.create_task(_process_zmq_voice_data(websocket, connection_state))
         while connection_state["is_alive"]:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
@@ -652,6 +659,14 @@ async def websocket_listening_endpoint(websocket: WebSocket):
                     # ZMQ任务结束，退出监听循环
                     connection_state["is_alive"] = False
                     break
+                # 可选：向前端发送心跳（避免长时间无输出用户以为卡住）
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "listening_heartbeat",
+                        "ts": datetime.now().isoformat()
+                    }))
+                except Exception:
+                    pass
                 continue
             except json.JSONDecodeError:
                 # 如果不是JSON消息，忽略
