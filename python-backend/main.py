@@ -516,21 +516,21 @@ async def websocket_listening_endpoint(websocket: WebSocket):
         while connection_state["is_alive"]:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
-            message_data = json.loads(data)
-            
-            if message_data.get("type") == "ping":
-                await websocket.send_text(json.dumps({
-                    "type": "pong",
-                    "timestamp": datetime.now().isoformat()
-                }))
-                rt_event("client_heartbeat", client_id=client_id)
-            elif message_data.get("type") == "stop_listening":
-                connection_state["is_alive"] = False
-                if zmq_task and not zmq_task.done():
-                    zmq_task.cancel()
-                await websocket.send_text("监听服务已停止")
-                rt_event("client_stop_request", client_id=client_id)
-                break
+                message_data = json.loads(data)
+                
+                if message_data.get("type") == "ping":
+                    await websocket.send_text(json.dumps({
+                        "type": "pong",
+                        "timestamp": datetime.now().isoformat()
+                    }))
+                    rt_event("client_heartbeat", client_id=client_id)
+                elif message_data.get("type") == "stop_listening":
+                    connection_state["is_alive"] = False
+                    if zmq_task and not zmq_task.done():
+                        zmq_task.cancel()
+                    await websocket.send_text("监听服务已停止")
+                    rt_event("client_stop_request", client_id=client_id)
+                    break
                 
         except asyncio.TimeoutError:
             # 超时是正常的，继续循环
