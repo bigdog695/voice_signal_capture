@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import json
@@ -177,7 +177,7 @@ async def health_check():
     }
 
 @app.get("/whitelist/register")
-async def whitelist_register(request: fastapi.Request = None, ip: Optional[str] = None):  # type: ignore
+async def whitelist_register(request: Request = None, ip: Optional[str] = None):  # type: ignore
     """注册请求来源IP到白名单。可显式传 ip，否则取 request.client.host"""
     try:
         real_ip = ip
