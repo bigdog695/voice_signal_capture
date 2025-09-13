@@ -30,7 +30,8 @@ IP_WHITE_LIST: List[str] = []  # 动态白名单, 初始为空, 通过 /whitelis
 PRINT_EVERY = 20
 
 # ================= ASR Model Configuration =================
-MODEL_NAME = "paraformer-zh-streaming"
+# 使用非流式单次识别模型; 采用固定 revision 避免 latest 变动
+MODEL_NAME = "paraformer-zh"
 # 与脚本一致使用明确 revision，避免 latest 不存在导致失败
 MODEL_REV = "v2.0.4"
 # 启动时自动检测 GPU 可用性
@@ -581,6 +582,13 @@ def _asr_generate_blocking(pcm_bytes: bytes):
         log.error(f"ASR 同步生成失败: {e}")
     return None
 
+def _next_call_id_and_inc(peer_ip, source):
+    """返回下一 call_id 并立即自增，确保每个 chunk 使用不同的 call_id"""
+    key = (peer_ip, source)
+    val = CALL_ID_PER_SOURCE.get(key, 0) + 1
+    CALL_ID_PER_SOURCE[key] = val
+    return val
+
 def _zmq_worker_thread():
     if asr_funasr_model is None:
         rt_event("zmq_thread_model_unavailable")
@@ -629,31 +637,28 @@ def _zmq_worker_thread():
                 SEQ_COUNTER += 1
                 txt = _asr_generate_blocking(pcm)
                 if txt:
-                    # 增量处理
-                    inc_evt = _process_incremental(peer_ip, source, st['call_id'], txt)
-                    if inc_evt:
-                        inc_evt['seq'] = SEQ_COUNTER
-                        inc_evt['start_ts'] = start_ts
-                        inc_evt['end_ts'] = end_ts
-                        try:
-                            ZMQ_QUEUE.put(inc_evt, timeout=0.5)
-                        except queue.Full:
-                            rt_event('queue_full_drop', seq=SEQ_COUNTER, segmentId=inc_evt.get('segmentId'))
+                    # 每个 chunk 独立处理：分配递增的 call_id 并发送最终结果
+                    call_id = _next_call_id_and_inc(peer_ip, source)
+                    evt = {
+                        'evt': 'asr_result',
+                        'peer_ip': peer_ip,
+                        'source': source,
+                        'call_id': call_id,
+                        'seq': SEQ_COUNTER,
+                        'text': txt,
+                        'start_ts': start_ts,
+                        'end_ts': end_ts,
+                        'wall_ts': datetime.utcnow().isoformat() + 'Z'
+                    }
+                    try:
+                        ZMQ_QUEUE.put(evt, timeout=0.5)
+                    except queue.Full:
+                        rt_event('queue_full_drop', seq=SEQ_COUNTER)
             if st['chunks'] % PRINT_EVERY == 0:
                 rt_event('chunk_progress_thread', peer_ip=peer_ip, source=source, call_id=st['call_id'],
                          chunks=st['chunks'], bytes=st['bytes'])
             if is_finished:
-                # finalize 当前段
-                final_evt = _finalize_segment(peer_ip, source, st['call_id'])
-                if final_evt:
-                    SEQ_COUNTER += 1
-                    final_evt['seq'] = SEQ_COUNTER
-                    final_evt['start_ts'] = start_ts
-                    final_evt['end_ts'] = end_ts
-                    try:
-                        ZMQ_QUEUE.put(final_evt, timeout=0.5)
-                    except queue.Full:
-                        rt_event('queue_full_drop', seq=SEQ_COUNTER, segmentId=final_evt.get('segmentId'), final=True)
+                # 保持旧的 call 结束日志
                 dur_sec = (len(st['buffer'])/2)/8000.0
                 rt_event('call_finished_thread', peer_ip=peer_ip, source=source, call_id=st['call_id'],
                          chunks=st['chunks'], bytes=st['bytes'], duration_sec=round(dur_sec,2))
