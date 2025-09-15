@@ -1,0 +1,43 @@
+import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
+
+const DEFAULT_CONFIG = {
+  backendHost: 'localhost:8000',
+  useHttps: false
+};
+
+const ConfigContext = createContext(null);
+
+export const ConfigProvider = ({ children }) => {
+  const [backendHost, setBackendHost] = useState(localStorage.getItem('backendHost') || DEFAULT_CONFIG.backendHost);
+  const [useHttps, setUseHttps] = useState(localStorage.getItem('useHttps') === 'true' || DEFAULT_CONFIG.useHttps);
+
+  const saveConfig = useCallback((host, https) => {
+    setBackendHost(host);
+    setUseHttps(https);
+    localStorage.setItem('backendHost', host);
+    localStorage.setItem('useHttps', https.toString());
+  }, []);
+
+  const protocols = useMemo(() => ({
+    http: useHttps ? 'https' : 'http',
+    ws: useHttps ? 'wss' : 'ws'
+  }), [useHttps]);
+
+  const urls = useMemo(() => ({
+    chat: (chatId='test_001') => `${protocols.ws}://${backendHost}/chatting?id=${chatId}`,
+    asr: () => `${protocols.ws}://${backendHost}/ws`,
+    listening: () => `${protocols.ws}://${backendHost}/listening`,
+    health: () => `${protocols.http}://${backendHost}/health`,
+    whitelistRegister: () => `${protocols.http}://${backendHost}/whitelist/register`,
+    base: () => `${protocols.http}://${backendHost}`
+  }), [protocols, backendHost]);
+
+  const value = { backendHost, useHttps, saveConfig, protocols, urls };
+  return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;
+};
+
+export const useConfig = () => {
+  const ctx = useContext(ConfigContext);
+  if (!ctx) throw new Error('useConfig must be used within ConfigProvider');
+  return ctx;
+};

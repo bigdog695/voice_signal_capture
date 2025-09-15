@@ -203,6 +203,16 @@ async def asr_info():
         "bytes_per_frame": BYTES_PER_FRAME
     }
 
+@app.get("/debug/clients")
+async def debug_clients():
+    """调试端点：查看当前连接的客户端和IP映射"""
+    return {
+        "total_clients": len(LISTENING_CLIENTS),
+        "client_ip_mapping": CLIENT_IP_MAPPING,
+        "whitelist": IP_WHITE_LIST,
+        "timestamp": datetime.now().isoformat()
+    }
+
 # 启动时初始化数据
 # init_sample_data()  # 移到文件末尾
 
@@ -440,6 +450,7 @@ def _resample_audio(audio_data, orig_sr, target_sr):
 # 全局监听：单例 ZMQ + ASR 线程 & 广播机制
 #############################################
 LISTENING_CLIENTS: Dict[str, WebSocket] = {}
+CLIENT_IP_MAPPING: Dict[str, str] = {}  # client_id -> client_ip 映射
 ZMQ_THREAD: Optional[threading.Thread] = None
 ZMQ_THREAD_STOP = threading.Event()
 ZMQ_QUEUE: "queue.Queue[dict]" = queue.Queue(maxsize=1000)
@@ -720,23 +731,42 @@ async def _broadcast_loop():
                     'end_ts': evt.get('end_ts'),
                     'timestamp': evt.get('wall_ts')
                 }
-            # 并发发送（单一结构化消息）
+            # 只发送给对应IP的客户端（不再广播给所有客户端）
+            target_ip = evt.get('peer_ip', 'unknown')
             tasks: List[asyncio.Task] = []
+            target_clients = []
+            
+            # 找到对应IP的客户端
             for cid, ws in list(LISTENING_CLIENTS.items()):
-                tasks.append(asyncio.create_task(ws.send_text(json.dumps(asr_update, ensure_ascii=False))))
+                client_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
+                if client_ip == target_ip:
+                    target_clients.append((cid, ws))
+                    tasks.append(asyncio.create_task(ws.send_text(json.dumps(asr_update, ensure_ascii=False))))
+            
+            # 如果没有找到对应IP的客户端，记录日志
+            if not target_clients:
+                rt_event('no_target_clients_found', target_ip=target_ip, 
+                        total_clients=len(LISTENING_CLIENTS), 
+                        available_ips=list(CLIENT_IP_MAPPING.values()))
+            
             if tasks:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 problem_clients: Set[str] = set()
-                keys_snapshot = list(LISTENING_CLIENTS.keys())
                 for idx, res in enumerate(results):
-                    if isinstance(res, Exception):
-                        if idx < len(keys_snapshot):
-                            problem_clients.add(keys_snapshot[idx])
+                    if isinstance(res, Exception) and idx < len(target_clients):
+                        cid = target_clients[idx][0]
+                        problem_clients.add(cid)
+                        rt_event('client_send_error', client_id=cid, error=str(res))
+                        
+                # 清理有问题的客户端
                 for pc in problem_clients:
                     LISTENING_CLIENTS.pop(pc, None)
+                    CLIENT_IP_MAPPING.pop(pc, None)
                     rt_event('client_removed_send_fail', client_id=pc)
+                    
             dur_ms = int((time.time() - t_start)*1000)
-            rt_event('broadcast_push', clients=len(LISTENING_CLIENTS), seq=evt['seq'], text_len=len(evt['text']), duration_ms=dur_ms)
+            rt_event('targeted_send', target_ip=target_ip, clients_found=len(target_clients), 
+                    seq=evt.get('seq', 0), text_len=len(evt.get('text', '')), duration_ms=dur_ms)
     except asyncio.CancelledError:
         rt_event('broadcast_loop_cancel')
     except Exception as e:
@@ -756,16 +786,40 @@ def ensure_zmq_thread_started():
 
 @app.websocket("/listening")
 async def websocket_listening_endpoint(websocket: WebSocket):
-    """本机通话监听WebSocket端点 - 使用单例ZMQ线程广播"""
+    """本机通话监听WebSocket端点 - 只向对应IP发送识别结果"""
     await websocket.accept()
     client_id = uuid.uuid4().hex[:8]
+    
+    # 获取客户端IP - 修复IP获取逻辑
+    client_ip = "unknown"
+    try:
+        # 方法1: 从WebSocket对象获取
+        if hasattr(websocket, 'client') and websocket.client:
+            client_ip = websocket.client.host
+        # 方法2: 从scope获取（FastAPI WebSocket）
+        elif hasattr(websocket, 'scope') and websocket.scope.get('client'):
+            client_ip = websocket.scope['client'][0]
+        # 方法3: 从headers获取（处理代理情况）
+        elif hasattr(websocket, 'headers'):
+            x_forwarded_for = websocket.headers.get('x-forwarded-for')
+            if x_forwarded_for:
+                client_ip = x_forwarded_for.split(',')[0].strip()
+            else:
+                x_real_ip = websocket.headers.get('x-real-ip')
+                if x_real_ip:
+                    client_ip = x_real_ip
+    except Exception as e:
+        rt_event('ip_extraction_error', error=str(e))
+    
     LISTENING_CLIENTS[client_id] = websocket
+    CLIENT_IP_MAPPING[client_id] = client_ip  # 记录客户端IP映射
+    
     ensure_zmq_thread_started()
     # 启动广播循环（单例，使用任务句柄判断）
     global BROADCAST_TASK
     if BROADCAST_TASK is None or BROADCAST_TASK.done():
         BROADCAST_TASK = asyncio.create_task(_broadcast_loop())
-    rt_event('client_connect', client_id=client_id, total_clients=len(LISTENING_CLIENTS))
+    rt_event('client_connect', client_id=client_id, client_ip=client_ip, total_clients=len(LISTENING_CLIENTS))
     connected_at = time.time()
     # 发送欢迎
     await websocket.send_text("监听服务已连接，正在等待通话数据...")
@@ -809,7 +863,9 @@ async def websocket_listening_endpoint(websocket: WebSocket):
     finally:
         hb_task.cancel()
         LISTENING_CLIENTS.pop(client_id, None)
-        rt_event('client_disconnect', client_id=client_id, duration_sec=round(time.time()-connected_at,2), remaining=len(LISTENING_CLIENTS))
+        CLIENT_IP_MAPPING.pop(client_id, None)  # 同时清理IP映射
+        rt_event('client_disconnect', client_id=client_id, client_ip=client_ip, 
+                duration_sec=round(time.time()-connected_at,2), remaining=len(LISTENING_CLIENTS))
 
 if __name__ == "__main__":
     log.info("========================================")

@@ -24,8 +24,21 @@ function createWindow() {
     transparent: false
   });
 
-  // 加载应用的 index.html
-  mainWindow.loadFile('index.html');
+  const isDev = process.argv.includes('--dev');
+  if (isDev) {
+    const devURL = 'http://localhost:5173';
+    mainWindow.loadURL(devURL).catch(() => {
+      console.log('Dev server not available, loading fallback...');
+      mainWindow.loadFile('index.html');
+    });
+  } else {
+    // 生产模式加载打包后的 React 入口
+    const distIndex = path.join(__dirname, 'dist', 'index.html');
+    mainWindow.loadFile(distIndex).catch(() => {
+      console.log('Built files not found, loading fallback...');
+      mainWindow.loadFile('index.html');
+    });
+  }
 
   // 窗口准备好后显示
   mainWindow.once('ready-to-show', () => {

@@ -1,122 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Chat</title>
-    <link rel="stylesheet" href="styles.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Chat (React)</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-    <div class="app-container">
-        <!-- 侧边栏 -->
-        <div class="sidebar">
-            <div class="sidebar-header">
-                <h2>Call History</h2>
-            </div>
-            
-            
-            <div class="chat-history" id="chatHistory">
-                <!-- 聊天历史列表将在这里动态生成 -->
-            </div>
-            
-            <div class="sidebar-footer">
-                <div class="connection-status" id="connectionStatus">
-                    <div class="status-indicator disconnected"></div>
-                    <span>Disconnected</span>
-                </div>
-                
-                <!-- 新增的功能按钮 -->
-                <div class="feature-buttons">
-                    <button class="feature-btn" id="viewCurrentCallBtn">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
-                            <path d="M6.271 5.055a.5.5 0 0 1 .52.038L11 6.964a.5.5 0 0 1 0 .872L6.791 9.707a.5.5 0 0 1-.791-.39V5.322a.5.5 0 0 1 .271-.267z"/>
-                        </svg>
-                        实时通话监听
-                    </button>
-                </div>
-                
-                <button class="settings-btn" id="settingsBtn">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
-                        <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.292-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.292c.415.764-.42 1.6-1.185 1.184l-.292-.159a1.873 1.873 0 0 0-2.692 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.693-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.292A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115l.094-.319z"/>
-                    </svg>
-                    Settings
-                </button>
-            </div>
-        </div>
-
-        <!-- 主聊天区域 -->
-        <div class="main-content">
-            <div class="chat-container">
-                <div class="chat-header">
-                    <h3 id="chatTitle">Select a Call</h3>
-                    <div class="chat-actions">
-                        <button class="action-btn" id="recordBtn" title="Start Recording">
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M8 12a4 4 0 0 0 4-4V4a4 4 0 0 0-8 0v4a4 4 0 0 0 4 4zm0 1a5 5 0 0 1-5-5V4a5 5 0 0 1 10 0v4a5 5 0 0 1-5 5z"/>
-                                <path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z"/>
-                            </svg>
-                        </button>
-                        <button class="action-btn" id="refreshBtn" title="Refresh Call List">
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/>
-                                <path fill-rule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5.002 5.002 0 0 0 8 3zM3.1 9a5.002 5.002 0 0 0 8.757 2.182.5.5 0 1 1 .771.636A6.002 6.002 0 0 1 2.083 9H3.1z"/>
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-                
-                <div class="messages-container" id="messagesContainer">
-                    <div class="no-call-selected" id="noCallSelected">
-                        <h2>Call Records Display</h2>
-                        <p>Select a call from the left sidebar to view its transcript and details.</p>
-                    </div>
-
-                    <!-- 本机通话监听窗口 -->
-                    <div class="local-monitor-display" id="localMonitorDisplay" style="display: none;">
-                        <div class="local-monitor-header">
-                            <h3>本机通话监听</h3>
-                            <div class="monitor-controls">
-                                <div class="connection-indicator" id="monitorConnectionIndicator">
-                                    <span>连接中...</span>
-                                </div>
-                                <button class="close-monitor-btn" id="closeMonitorBtn" title="关闭监听">
-                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                        <path d="M2.146 2.854a.5.5 0 1 1 .708-.708L8 7.293l5.146-5.147a.5.5 0 0 1 .708.708L8.707 8l5.147 5.146a.5.5 0 0 1-.708.708L8 8.707l-5.146 5.147a.5.5 0 0 1-.708-.708L7.293 8 2.146 2.854Z"/>
-                                    </svg>
-                                </button>
-                            </div>
-                        </div>
-                        
-                        <div class="monitor-content" id="monitorContent">
-                            <div class="monitor-text-display">
-                                <div class="monitor-messages" id="monitorMessages">
-                                    <!-- 监听到的文字将在这里实时显示 -->
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- 实时语音识别窗口 -->
-                    <div class="asr-display" id="asrDisplay" style="display: none;">
-                        <div class="asr-header">
-                            <h3>Real-time Transcription</h3>
-                        </div>
-                        <div class="asr-content-wrapper">
-                            <div class="asr-content" id="asrContent"></div>
-                        </div>
-                    </div>
-                    
-                    <!-- 实时通话窗口 -->
-                    <div class="live-call-display" id="liveCallDisplay" style="display: none;">
-                        <div class="live-call-header">
-                            <h3>Live Call Session</h3>
-                            <div class="call-controls">
-                                <div class="connection-indicator connected" id="liveConnectionIndicator">
-                                    <span>Connected</span>
-                                </div>
-                                <button class="minimize-btn" id="minimizeLiveCallBtn" title="Minimize">
+  <div id="root"></div>
+  <script type="module" src="./src/main.jsx"></script>
+</body>
+</html>
                                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                                         <path d="M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8z"/>
                                     </svg>
