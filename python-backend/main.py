@@ -622,7 +622,7 @@ def _zmq_worker_thread():
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.PULL)
     sock.setsockopt(zmq.LINGER, 0)
-    endpoint = "tcp://0.0.0.0:5555"
+    endpoint = "tcp://0.0.0.0:5556"
     try:
         sock.bind(endpoint)
         rt_event("zmq_thread_bind", endpoint=endpoint)
