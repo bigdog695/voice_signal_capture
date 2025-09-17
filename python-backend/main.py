@@ -4,6 +4,7 @@ import uvicorn
 import json
 import asyncio
 import time
+import os
 from typing import Dict, List, Optional, Set
 from pydantic import BaseModel
 from datetime import datetime
@@ -29,6 +30,8 @@ log = logging.getLogger(LOG_NAME)
 IP_WHITE_LIST: List[str] = []  # 动态白名单, 初始为空, 通过 /whitelist/register 添加
 PRINT_EVERY = 20
 
+FORCE_LISTENING_DEBUG = os.getenv("FORCE_LISTENING_DEBUG", "0").lower() in {"1", "true", "yes", "on"}
+
 # ================= ASR Model Configuration =================
 # 使用非流式单次识别模型; 采用固定 revision 避免 latest 变动
 MODEL_NAME = "paraformer-zh"
@@ -49,6 +52,10 @@ DEC_LB = 0
 BYTES_PER_FRAME = 3200  # 1600 samples * 2 bytes (int16) when applicable
 
 asr_funasr_model = None  # 模型对象占位（后续需实际加载）
+
+# ================= Logging & Constants =================
+# ...
+
 
 def load_funasr_model():
     """加载 FunASR 模型（惰性加载），成功返回全局模型对象。"""
@@ -87,6 +94,9 @@ def rt_event(event: str, **fields):
     except Exception:
         log.info(f"RT {{'evt':'{event}','error':'log_serialize_failed'}}")
 
+if FORCE_LISTENING_DEBUG:
+    rt_event('force_listening_debug_enabled')
+
 # ================= FastAPI App =================
 app = FastAPI(title="Voice Chat Backend", version="2.0.0")
 app.add_middleware(
@@ -103,8 +113,11 @@ async def startup_event():
     load_funasr_model()
     if asr_funasr_model is None:
         rt_event("asr_model_unavailable_startup")
-    else:
-        rt_event("asr_model_ready_startup")
+        return
+    rt_event("asr_model_ready_startup")
+    ensure_zmq_thread_started()
+    ensure_broadcast_loop_started(reason='startup')
+
 
 # ================= Chat Data Models & Sample Data =================
 class ChatMessage(BaseModel):
@@ -624,8 +637,11 @@ def _zmq_worker_thread():
                 continue
             meta = json.loads(meta_raw.decode('utf-8'))
             peer_ip = meta.get('peer_ip', 'unknown')
-            if IP_WHITE_LIST and IP_WHITE_LIST != ["*"] and peer_ip not in IP_WHITE_LIST:
+            whitelist_blocked = IP_WHITE_LIST and IP_WHITE_LIST != ["*"] and peer_ip not in IP_WHITE_LIST
+            if whitelist_blocked and not FORCE_LISTENING_DEBUG:
                 continue
+            if whitelist_blocked and FORCE_LISTENING_DEBUG:
+                rt_event('force_whitelist_override', peer_ip=peer_ip)
             source = meta.get('source', 'unknown')
             start_ts = meta.get('start_ts')
             end_ts = meta.get('end_ts')
@@ -735,20 +751,25 @@ async def _broadcast_loop():
             target_ip = evt.get('peer_ip', 'unknown')
             tasks: List[asyncio.Task] = []
             target_clients = []
-            
-            # 找到对应IP的客户端
-            for cid, ws in list(LISTENING_CLIENTS.items()):
-                client_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
-                if client_ip == target_ip:
-                    target_clients.append((cid, ws))
-                    tasks.append(asyncio.create_task(ws.send_text(json.dumps(asr_update, ensure_ascii=False))))
-            
-            # 如果没有找到对应IP的客户端，记录日志
+            clients_snapshot = list(LISTENING_CLIENTS.items())
+
+            if FORCE_LISTENING_DEBUG:
+                target_clients = clients_snapshot
+                rt_event('force_broadcast_all', seq=evt.get('seq'), source_ip=target_ip, total_clients=len(target_clients))
+            else:
+                for cid, ws in clients_snapshot:
+                    client_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
+                    if client_ip == target_ip:
+                        target_clients.append((cid, ws))
+
+            for cid, ws in target_clients:
+                tasks.append(asyncio.create_task(ws.send_text(json.dumps(asr_update, ensure_ascii=False))))
+
             if not target_clients:
                 rt_event('no_target_clients_found', target_ip=target_ip, 
                         total_clients=len(LISTENING_CLIENTS), 
                         available_ips=list(CLIENT_IP_MAPPING.values()))
-            
+
             if tasks:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 problem_clients: Set[str] = set()
@@ -784,6 +805,13 @@ def ensure_zmq_thread_started():
     ZMQ_THREAD.start()
     rt_event('zmq_thread_started')
 
+
+def ensure_broadcast_loop_started(reason: str = 'unspecified'):
+    global BROADCAST_TASK
+    if BROADCAST_TASK is None or BROADCAST_TASK.done():
+        BROADCAST_TASK = asyncio.create_task(_broadcast_loop())
+        rt_event('broadcast_loop_started', reason=reason)
+
 @app.websocket("/listening")
 async def websocket_listening_endpoint(websocket: WebSocket):
     """本机通话监听WebSocket端点 - 只向对应IP发送识别结果"""
@@ -815,10 +843,7 @@ async def websocket_listening_endpoint(websocket: WebSocket):
     CLIENT_IP_MAPPING[client_id] = client_ip  # 记录客户端IP映射
     
     ensure_zmq_thread_started()
-    # 启动广播循环（单例，使用任务句柄判断）
-    global BROADCAST_TASK
-    if BROADCAST_TASK is None or BROADCAST_TASK.done():
-        BROADCAST_TASK = asyncio.create_task(_broadcast_loop())
+    ensure_broadcast_loop_started(reason='client_fallback')
     rt_event('client_connect', client_id=client_id, client_ip=client_ip, total_clients=len(LISTENING_CLIENTS))
     connected_at = time.time()
     # 发送欢迎
@@ -866,6 +891,10 @@ async def websocket_listening_endpoint(websocket: WebSocket):
         CLIENT_IP_MAPPING.pop(client_id, None)  # 同时清理IP映射
         rt_event('client_disconnect', client_id=client_id, client_ip=client_ip, 
                 duration_sec=round(time.time()-connected_at,2), remaining=len(LISTENING_CLIENTS))
+
+# Global kill-switch to always ASR and broadcast to ALL sockets.
+# Can be set via env (FORCE_LISTENING_SWITCH=1) or assigned in code.
+
 
 if __name__ == "__main__":
     log.info("========================================")
