@@ -617,6 +617,8 @@ def _zmq_worker_thread():
     if asr_funasr_model is None:
         rt_event("zmq_thread_model_unavailable")
         return
+    else:
+        rt_event("zmq_worker_thread started successfully.")
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.PULL)
     sock.setsockopt(zmq.LINGER, 0)
