@@ -717,7 +717,7 @@ def _zmq_worker_thread():
     rt_event('zmq_thread_exit')
 
 async def _broadcast_loop():
-    global BROADCAST_TASK
+    global BROADCAST_TASK, FORCE_DEBUG_ACTIVE_IP
     rt_event('broadcast_loop_start')
     try:
         loop = asyncio.get_event_loop()
@@ -729,7 +729,6 @@ async def _broadcast_loop():
             t_start = time.time()
             # FORCE debug: handle call finished to release active IP
             if FORCE_LISTENING_DEBUG and evt.get('evt') == 'call_finished':
-                global FORCE_DEBUG_ACTIVE_IP
                 if FORCE_DEBUG_ACTIVE_IP == evt.get('peer_ip'):
                     rt_event('force_ip_released', ip=FORCE_DEBUG_ACTIVE_IP)
                     FORCE_DEBUG_ACTIVE_IP = None
@@ -776,7 +775,6 @@ async def _broadcast_loop():
             clients_snapshot = list(LISTENING_CLIENTS.items())
 
             if FORCE_LISTENING_DEBUG:
-                global FORCE_DEBUG_ACTIVE_IP
                 if FORCE_DEBUG_ACTIVE_IP is None:
                     FORCE_DEBUG_ACTIVE_IP = target_ip
                     rt_event('force_pick_ip', ip=FORCE_DEBUG_ACTIVE_IP)
