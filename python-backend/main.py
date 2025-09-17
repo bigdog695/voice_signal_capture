@@ -472,6 +472,8 @@ CALL_STATE = {}  # (peer_ip, source) -> {call_id:int, buffer:bytearray, chunks:i
 CALL_ID_PER_SOURCE = {}
 # 广播协程任务句柄（避免用线程枚举检测）
 BROADCAST_TASK: Optional[asyncio.Task] = None
+# Active IP lock for FORCE_LISTENING_DEBUG mode
+FORCE_DEBUG_ACTIVE_IP: Optional[str] = None
 
 # === 增量分句流式识别状态 ===
 # key: (peer_ip, source, call_id) -> state dict
@@ -617,8 +619,6 @@ def _zmq_worker_thread():
     if asr_funasr_model is None:
         rt_event("zmq_thread_model_unavailable")
         return
-    else:
-        rt_event("zmq_worker_thread started successfully.")
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.PULL)
     sock.setsockopt(zmq.LINGER, 0)
@@ -691,6 +691,19 @@ def _zmq_worker_thread():
                 dur_sec = (len(st['buffer'])/2)/8000.0
                 rt_event('call_finished_thread', peer_ip=peer_ip, source=source, call_id=st['call_id'],
                          chunks=st['chunks'], bytes=st['bytes'], duration_sec=round(dur_sec,2))
+                try:
+                    ZMQ_QUEUE.put({
+                        'evt': 'call_finished',
+                        'peer_ip': peer_ip,
+                        'source': source,
+                        'call_id': st['call_id'],
+                        'seq': SEQ_COUNTER,
+                        'start_ts': start_ts,
+                        'end_ts': end_ts,
+                        'wall_ts': datetime.utcnow().isoformat() + 'Z'
+                    }, timeout=0.5)
+                except queue.Full:
+                    rt_event('queue_full_drop', seq=SEQ_COUNTER)
                 _rotate_call(peer_ip, source)
                 del CALL_STATE[key]
         except Exception as e:
@@ -714,6 +727,13 @@ async def _broadcast_loop():
             except queue.Empty:
                 continue
             t_start = time.time()
+            # FORCE debug: handle call finished to release active IP
+            if FORCE_LISTENING_DEBUG and evt.get('evt') == 'call_finished':
+                global FORCE_DEBUG_ACTIVE_IP
+                if FORCE_DEBUG_ACTIVE_IP == evt.get('peer_ip'):
+                    rt_event('force_ip_released', ip=FORCE_DEBUG_ACTIVE_IP)
+                    FORCE_DEBUG_ACTIVE_IP = None
+                continue
             # 构造消息
             # evt 来自增量：区分 is_final / partial
             # 兼容：若无 segmentId 视为旧格式
@@ -756,13 +776,18 @@ async def _broadcast_loop():
             clients_snapshot = list(LISTENING_CLIENTS.items())
 
             if FORCE_LISTENING_DEBUG:
-                target_clients = clients_snapshot
-                rt_event('force_broadcast_all', seq=evt.get('seq'), source_ip=target_ip, total_clients=len(target_clients))
+                global FORCE_DEBUG_ACTIVE_IP
+                if FORCE_DEBUG_ACTIVE_IP is None:
+                    FORCE_DEBUG_ACTIVE_IP = target_ip
+                    rt_event('force_pick_ip', ip=FORCE_DEBUG_ACTIVE_IP)
+                target_ip = FORCE_DEBUG_ACTIVE_IP
             else:
-                for cid, ws in clients_snapshot:
-                    client_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
-                    if client_ip == target_ip:
-                        target_clients.append((cid, ws))
+                pass
+
+            for cid, ws in clients_snapshot:
+                client_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
+                if client_ip == target_ip:
+                    target_clients.append((cid, ws))
 
             for cid, ws in target_clients:
                 tasks.append(asyncio.create_task(ws.send_text(json.dumps(asr_update, ensure_ascii=False))))
@@ -771,6 +796,7 @@ async def _broadcast_loop():
                 rt_event('no_target_clients_found', target_ip=target_ip, 
                         total_clients=len(LISTENING_CLIENTS), 
                         available_ips=list(CLIENT_IP_MAPPING.values()))
+
 
             if tasks:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
