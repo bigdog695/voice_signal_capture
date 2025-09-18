@@ -639,7 +639,7 @@ def _zmq_worker_thread():
                 continue
             meta = json.loads(meta_raw.decode('utf-8'))
             peer_ip = meta.get('peer_ip', 'unknown')
-            rt_event("peer_ip:", peer_ip)
+            rt_event('peer_ip_detected', peer_ip=peer_ip)
             if IP_WHITE_LIST and IP_WHITE_LIST != ["*"] and peer_ip not in IP_WHITE_LIST and FORCE_LISTENING_DEBUG:
                 rt_event('force_whitelist_override', peer_ip=peer_ip)
             source = meta.get('source', 'unknown')
@@ -665,7 +665,7 @@ def _zmq_worker_thread():
                 txt = _asr_generate_blocking(pcm)
                 if txt:
                     # 每个 chunk 独立处理：分配递增的 call_id 并发送最终结果
-                    rt_event("asr result:", txt)
+                    rt_event('asr_text_recognized', peer_ip=peer_ip, source=source, text=txt)
                     call_id = _next_call_id_and_inc(peer_ip, source)
                     evt = {
                         'evt': 'asr_result',
@@ -789,7 +789,7 @@ async def _broadcast_loop():
                     target_clients.append((cid, ws))
 
             for cid, ws in target_clients:
-                rt_event("send data to: ", cid)
+                rt_event('send_data_to_client', client_id=cid)
                 tasks.append(asyncio.create_task(ws.send_text(json.dumps(asr_update, ensure_ascii=False))))
 
             if not target_clients:
