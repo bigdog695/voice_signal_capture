@@ -726,12 +726,21 @@ async def _broadcast_loop():
             except queue.Empty:
                 continue
             t_start = time.time()
-            # FORCE debug: handle call finished to release active IP
-            if FORCE_LISTENING_DEBUG and evt.get('evt') == 'call_finished':
-                if FORCE_DEBUG_ACTIVE_IP == evt.get('peer_ip'):
+            # FORCE debug mode: pin to a single active IP.
+            # - If no active IP yet, pick the first event's peer_ip.
+            # - Only release when we see that IP's call_finished.
+            # - Skip events from other IPs while pinned.
+            if FORCE_LISTENING_DEBUG:
+                peer = evt.get('peer_ip')
+                if FORCE_DEBUG_ACTIVE_IP is None and evt.get('evt') != 'call_finished':
+                    FORCE_DEBUG_ACTIVE_IP = peer
+                    rt_event('force_pick_ip', ip=FORCE_DEBUG_ACTIVE_IP)
+                if evt.get('evt') == 'call_finished' and FORCE_DEBUG_ACTIVE_IP == peer:
                     rt_event('force_ip_released', ip=FORCE_DEBUG_ACTIVE_IP)
                     FORCE_DEBUG_ACTIVE_IP = None
-                continue
+                    continue
+                if FORCE_DEBUG_ACTIVE_IP is not None and peer != FORCE_DEBUG_ACTIVE_IP:
+                    continue
             # 构造消息
             # evt 来自增量：区分 is_final / partial
             # 兼容：若无 segmentId 视为旧格式
