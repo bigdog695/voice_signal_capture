@@ -639,10 +639,8 @@ def _zmq_worker_thread():
                 continue
             meta = json.loads(meta_raw.decode('utf-8'))
             peer_ip = meta.get('peer_ip', 'unknown')
-            whitelist_blocked = IP_WHITE_LIST and IP_WHITE_LIST != ["*"] and peer_ip not in IP_WHITE_LIST
-            if whitelist_blocked and not FORCE_LISTENING_DEBUG:
-                continue
-            if whitelist_blocked and FORCE_LISTENING_DEBUG:
+            rt_event("peer_ip:", peer_ip)
+            if IP_WHITE_LIST and IP_WHITE_LIST != ["*"] and peer_ip not in IP_WHITE_LIST and FORCE_LISTENING_DEBUG:
                 rt_event('force_whitelist_override', peer_ip=peer_ip)
             source = meta.get('source', 'unknown')
             start_ts = meta.get('start_ts')
@@ -667,6 +665,7 @@ def _zmq_worker_thread():
                 txt = _asr_generate_blocking(pcm)
                 if txt:
                     # 每个 chunk 独立处理：分配递增的 call_id 并发送最终结果
+                    rt_event("asr result:", txt)
                     call_id = _next_call_id_and_inc(peer_ip, source)
                     evt = {
                         'evt': 'asr_result',
@@ -777,17 +776,20 @@ async def _broadcast_loop():
             if FORCE_LISTENING_DEBUG:
                 if FORCE_DEBUG_ACTIVE_IP is None:
                     FORCE_DEBUG_ACTIVE_IP = target_ip
-                    rt_event('force_pick_ip', ip=FORCE_DEBUG_ACTIVE_IP)
+                    rt_event('*******************force_pick_ip***************', ip=FORCE_DEBUG_ACTIVE_IP)
                 target_ip = FORCE_DEBUG_ACTIVE_IP
             else:
                 pass
 
             for cid, ws in clients_snapshot:
+                if FORCE_LISTENING_DEBUG:
+                    target_clients = clients_snapshot
                 client_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
                 if client_ip == target_ip:
                     target_clients.append((cid, ws))
 
             for cid, ws in target_clients:
+                rt_event("send data to: ", cid)
                 tasks.append(asyncio.create_task(ws.send_text(json.dumps(asr_update, ensure_ascii=False))))
 
             if not target_clients:
