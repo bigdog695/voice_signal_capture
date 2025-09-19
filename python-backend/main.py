@@ -861,17 +861,21 @@ async def websocket_listening_endpoint(websocket: WebSocket):
         # 方法1: 从WebSocket对象获取
         if hasattr(websocket, 'client') and websocket.client:
             client_ip = websocket.client.host
+            rt_event('[DEBUG:] from websocket client', client_ip = client_ip)
         # 方法2: 从scope获取（FastAPI WebSocket）
         elif hasattr(websocket, 'scope') and websocket.scope.get('client'):
             client_ip = websocket.scope['client'][0]
+            rt_event('[DEBUG:] from websocket scope', client_ip = client_ip)
         # 方法3: 从headers获取（处理代理情况）
         elif hasattr(websocket, 'headers'):
             x_forwarded_for = websocket.headers.get('x-forwarded-for')
             if x_forwarded_for:
                 client_ip = x_forwarded_for.split(',')[0].strip()
+                rt_event('[DEBUG:] from websocket x-forwarded-for', client_ip = client_ip)
             else:
                 x_real_ip = websocket.headers.get('x-real-ip')
                 if x_real_ip:
+                    rt_event('[DEBUG:] from websocket x-real-ip', client_ip = client_ip)
                     client_ip = x_real_ip
     except Exception as e:
         rt_event('ip_extraction_error', error=str(e))
