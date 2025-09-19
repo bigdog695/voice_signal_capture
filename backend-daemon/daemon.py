@@ -8,6 +8,7 @@ from typing import Dict, Tuple, Optional
 import numpy as np
 import scipy.signal
 import zmq
+import math
 
 
 # ================= Logging =================
@@ -24,8 +25,11 @@ INPUT_ZMQ_ENDPOINT = os.getenv("INPUT_ZMQ_ENDPOINT", "tcp://0.0.0.0:5556")
 OUTPUT_ZMQ_ENDPOINT = os.getenv("OUTPUT_ZMQ_ENDPOINT", "tcp://0.0.0.0:5557")
 
 # Model settings
+# Default to non-streaming model as requested
 MODEL_NAME = os.getenv("ASR_MODEL", "paraformer-zh")
 MODEL_REV = os.getenv("ASR_MODEL_REV", "v2.0.4")
+ASR_INPUT_SR = int(os.getenv("ASR_INPUT_SAMPLE_RATE", "8000"))
+ASR_ENERGY_GATE = float(os.getenv("ASR_ENERGY_GATE", "0"))  # 0 disables gate
 
 try:
     import torch  # noqa: F401
@@ -70,20 +74,60 @@ def load_funasr_model():
     return asr_funasr_model
 
 
+def _extract_text(result) -> Optional[str]:
+    try:
+        if not result:
+            return None
+        if isinstance(result, list) and result:
+            item = result[0]
+            if isinstance(item, dict):
+                for key in ("text", "value", "transcript", "result", "sentence"):
+                    v = item.get(key)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+            elif isinstance(item, str) and item.strip():
+                return item.strip()
+        elif isinstance(result, dict):
+            for key in ("text", "value", "transcript", "result", "sentence"):
+                v = result.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+        elif isinstance(result, str) and result.strip():
+            return result.strip()
+    except Exception:
+        pass
+    return None
+
+
 def _asr_generate_blocking(pcm_bytes: bytes) -> Optional[str]:
     try:
-        audio_8k = np.frombuffer(pcm_bytes, dtype=np.int16)
-        if audio_8k.size == 0:
+        audio = np.frombuffer(pcm_bytes, dtype=np.int16)
+        if audio.size == 0:
             return None
-        # simple VAD-ish energy gate
-        if np.abs(audio_8k).mean() < 5:
+        # optional simple energy gate
+        if ASR_ENERGY_GATE > 0 and np.abs(audio).mean() < ASR_ENERGY_GATE:
             return None
-        audio_16k = scipy.signal.resample_poly(audio_8k, up=2, down=1).astype(np.float32) / 32768.0
-        result = asr_funasr_model.generate(input=audio_16k)
-        if result and len(result) > 0:
-            txt = result[0].get('text')
-            if txt and txt.strip():
-                return txt.strip()
+
+        # resample to 16k for FunASR models
+        if ASR_INPUT_SR <= 0:
+            src_sr = 8000
+        else:
+            src_sr = ASR_INPUT_SR
+
+        if src_sr == 16000:
+            audio_f = audio.astype(np.float32) / 32768.0
+        else:
+            up = 16000
+            down = src_sr
+            g = math.gcd(up, down)
+            up //= g
+            down //= g
+            audio_f = scipy.signal.resample_poly(audio, up=up, down=down).astype(np.float32) / 32768.0
+
+        result = asr_funasr_model.generate(input=audio_f)
+        txt = _extract_text(result)
+        if txt:
+            return txt
     except Exception as e:
         rt_event("asr_generate_error", error=str(e))
     return None
@@ -158,6 +202,14 @@ def main():
                         'source': source,
                     }
                     try:
+                        # Log before publish to ensure visibility even if PUB fails
+                        rt_event(
+                            "asr_text_recognized",
+                            peer_ip=peer_ip,
+                            source=source,
+                            text_len=len(txt),
+                            text_preview=(txt[:120] + ("…" if len(txt) > 120 else ""))
+                        )
                         pub_sock.send_json(event)
                     except Exception as e:
                         rt_event('pub_send_error', error=str(e))
