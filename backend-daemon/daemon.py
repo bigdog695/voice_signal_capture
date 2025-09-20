@@ -196,7 +196,7 @@ def main():
                 txt = _asr_generate_blocking(pcm)
                 if txt:
                     event = {
-                        'type': 'asr_result',
+                        'type': 'asr_update',
                         'text': txt,
                         'peer_ip': peer_ip,
                         'source': source,
