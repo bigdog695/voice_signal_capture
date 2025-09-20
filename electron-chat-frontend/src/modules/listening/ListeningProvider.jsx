@@ -85,8 +85,12 @@ export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, child
             appendBubble(data.text, 'asr_partial', data.source || 'mock');
             break;
           case 'call_finished':
-            // Append an end-of-call marker bubble (no scrolling logic change here)
+            // Append an end-of-call marker bubble then clear history for fresh next call
             appendBubble('（结束）', 'call_finished', data.source || 'asr');
+            // Schedule clear on next tick so the end marker is briefly visible / persisted
+            setTimeout(() => {
+              clearBubbles();
+            }, 50);
             break;
           default: break;
         }

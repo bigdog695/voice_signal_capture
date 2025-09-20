@@ -28,6 +28,7 @@ Mock WebSocket Server
   MOCK_HEARTBEAT_SEC    (服务器心跳发送间隔，默认 1 秒)
   MOCK_LOG_LEVEL        (默认 INFO)
   MOCK_CLIENT_IDLE_TIMEOUT (秒，客户端无消息超时仅用于日志，默认 30)
+  MOCK_CYCLES_PER_CALL  (完成多少“全文本列表循环”后发送一次 call_finished，默认 1；设置为 3 表示 发送 3 * len(EVENT_TEXTS) 条 asr_update 后再结束)
 
 与 main.py 的差异：
   - 移除了 ZMQ 订阅逻辑，替换为内部 _mock_event_loop
@@ -42,10 +43,11 @@ log = logging.getLogger(LOG_NAME)
 # ================= Config =================
 EVENT_INTERVAL = float(os.getenv("MOCK_EVENT_INTERVAL", "2.5"))
 EVENT_BROADCAST = os.getenv("MOCK_EVENT_BROADCAST", "1") == "1"
-EVENT_TEXTS = [t.strip() for t in os.getenv("MOCK_EVENT_TEXTS", "语音片段一,语音片段二,语音片段三").split(",") if t.strip()] or ["示例文本"]
+EVENT_TEXTS = [t.strip() for t in os.getenv("MOCK_EVENT_TEXTS", "语音片段一,语音片段二,语音片段三, 语音片段四").split(",") if t.strip()] or ["示例文本"]
 SERVER_PORT = int(os.getenv("MOCK_SERVER_PORT", "18000"))
 HEARTBEAT_SEC = float(os.getenv("MOCK_HEARTBEAT_SEC", "1.0"))
 CLIENT_IDLE_TIMEOUT = float(os.getenv("MOCK_CLIENT_IDLE_TIMEOUT", "30"))
+CYCLES_PER_CALL = max(1, int(os.getenv("MOCK_CYCLES_PER_CALL", "1")))  # 防止 0 或负数
 
 app = FastAPI(title="Voice Mock WS Server", version="1.0.0")
 app.add_middleware(
@@ -96,7 +98,7 @@ async def _mock_event_loop():
     """周期性构造模拟 ASR 事件并分发。"""
     idx = 0
     cycle_count = 0  # how many full text cycles completed
-    rt_event('mock_loop_start', interval=EVENT_INTERVAL, broadcast=EVENT_BROADCAST)
+    rt_event('mock_loop_start', interval=EVENT_INTERVAL, broadcast=EVENT_BROADCAST, cycles_per_call=CYCLES_PER_CALL)
     try:
         while True:
             await asyncio.sleep(EVENT_INTERVAL)
@@ -108,7 +110,7 @@ async def _mock_event_loop():
             idx += 1
             # 事件结构尽量贴近真实 main.py 中 dispatcher 预期
             base_evt = {
-                'type': 'asr_partial',
+                'type': 'asr_update',
                 'text': text,
                 'peer_ip': None,  # 发送前填充
                 'source': current_source
@@ -135,37 +137,41 @@ async def _mock_event_loop():
                 except Exception as e:
                     rt_event('mock_unicast_error', client_id=cid, error=str(e))
 
-            # 当完成一个完整文本列表循环后，发送 call_finished 标志
+            # 当完成一个完整文本列表循环后，判断是否需要发送 call_finished
             if idx % len(EVENT_TEXTS) == 0:
                 cycle_count += 1
-                finished_evt_template = {
-                    'type': 'call_finished',
-                    'text': '',
-                    'source': 'system'
-                }
-                if EVENT_BROADCAST:
-                    tasks_finish: List[asyncio.Task] = []
-                    for cid, ws in list(LISTENING_CLIENTS.items()):
-                        peer_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
-                        fevt = {**finished_evt_template, 'peer_ip': peer_ip}
-                        rt_event('mock_call_finished_broadcast', client_id=cid, peer_ip=peer_ip, cycle=cycle_count)
-                        tasks_finish.append(asyncio.create_task(ws.send_text(json.dumps(fevt, ensure_ascii=False))))
-                    if tasks_finish:
-                        await asyncio.gather(*tasks_finish, return_exceptions=True)
-                else:
-                    # 在单播模式选择一个客户端发送结束
-                    if LISTENING_CLIENTS:
-                        import random as _r
-                        cid2, ws2 = _r.choice(list(LISTENING_CLIENTS.items()))
-                        peer_ip2 = CLIENT_IP_MAPPING.get(cid2, 'unknown')
-                        fevt = {**finished_evt_template, 'peer_ip': peer_ip2}
-                        rt_event('mock_call_finished_unicast', client_id=cid2, peer_ip=peer_ip2, cycle=cycle_count)
-                        try:
-                            await ws2.send_text(json.dumps(fevt, ensure_ascii=False))
-                        except Exception as e:
-                            rt_event('mock_call_finished_unicast_error', client_id=cid2, error=str(e))
-                # 可选：在结束后插入一个额外的间隔，模拟通话间歇
-                await asyncio.sleep(max(0.5, EVENT_INTERVAL * 0.5))
+                rt_event('mock_cycle_complete', cycle_count=cycle_count, cycles_per_call=CYCLES_PER_CALL)
+                if cycle_count >= CYCLES_PER_CALL:
+                    finished_evt_template = {
+                        'type': 'call_finished',
+                        'text': '',
+                        'source': 'system'
+                    }
+                    if EVENT_BROADCAST:
+                        tasks_finish: List[asyncio.Task] = []
+                        for cid, ws in list(LISTENING_CLIENTS.items()):
+                            peer_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
+                            fevt = {**finished_evt_template, 'peer_ip': peer_ip}
+                            rt_event('mock_call_finished_broadcast', client_id=cid, peer_ip=peer_ip, cycle=cycle_count)
+                            tasks_finish.append(asyncio.create_task(ws.send_text(json.dumps(fevt, ensure_ascii=False))))
+                        if tasks_finish:
+                            await asyncio.gather(*tasks_finish, return_exceptions=True)
+                    else:
+                        # 在单播模式选择一个客户端发送结束
+                        if LISTENING_CLIENTS:
+                            import random as _r
+                            cid2, ws2 = _r.choice(list(LISTENING_CLIENTS.items()))
+                            peer_ip2 = CLIENT_IP_MAPPING.get(cid2, 'unknown')
+                            fevt = {**finished_evt_template, 'peer_ip': peer_ip2}
+                            rt_event('mock_call_finished_unicast', client_id=cid2, peer_ip=peer_ip2, cycle=cycle_count)
+                            try:
+                                await ws2.send_text(json.dumps(fevt, ensure_ascii=False))
+                            except Exception as e:
+                                rt_event('mock_call_finished_unicast_error', client_id=cid2, error=str(e))
+                    # reset for next call
+                    cycle_count = 0
+                    # 可选：在结束后插入一个额外的间隔，模拟通话间歇
+                    await asyncio.sleep(max(0.5, EVENT_INTERVAL * 0.5))
     except asyncio.CancelledError:
         rt_event('mock_loop_cancel')
     finally:
