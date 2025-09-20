@@ -157,6 +157,12 @@ async def _dispatch_asr_event(evt: Dict):
 
 @app.on_event("startup")
 async def startup_event():
+    # Self-check: verify websockets library availability for proper upgrade support
+    try:
+        import websockets  # noqa: F401
+        rt_event('websockets_lib_detected', version=getattr(__import__('websockets'), '__version__', 'unknown'))
+    except Exception as e:
+        rt_event('websockets_lib_missing', error=str(e))
     global ZMQ_TASK
     if ZMQ_TASK is None or ZMQ_TASK.done():
         ZMQ_TASK = asyncio.create_task(_zmq_consume_loop())
@@ -235,4 +241,10 @@ if __name__ == "__main__":
     log.info("Voice WS Server - v1.0.0")
     log.info("========================================")
     log.info(f"ASR_EVENTS_ENDPOINT: {ASR_EVENTS_ENDPOINT}")
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+    # Allow overriding listen port (default 8000) so frontend config can match dynamically.
+    PORT = int(os.getenv("WS_SERVER_PORT", "8000"))
+    try:
+        rt_event('server_starting', port=PORT, host='0.0.0.0')
+    except Exception:
+        pass
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=True, log_level="info")

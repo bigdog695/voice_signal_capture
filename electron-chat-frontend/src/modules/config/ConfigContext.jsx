@@ -32,11 +32,11 @@ export const ConfigProvider = ({ children }) => {
     asr: () => `${protocols.ws}://${backendHost}/ws`,
     listening: () => `${protocols.ws}://${backendHost}/listening`,
     health: () => `${protocols.http}://${backendHost}/health`,
-    whitelistRegister: () => `${protocols.http}://${backendHost}/whitelist/register`,
     base: () => `${protocols.http}://${backendHost}`
   }), [protocols, backendHost]);
 
   const value = { backendHost, useHttps, devServerHost, exampleServerHost, saveConfig, protocols, urls };
+  try { console.info('[Config] backendHost=', backendHost, 'listeningURL=', urls.listening()); } catch(_) {}
   return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;
 };
 

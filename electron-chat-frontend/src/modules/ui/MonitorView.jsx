@@ -8,6 +8,7 @@ export const MonitorView = ({ onClose }) => {
   const [userHasScrolled, setUserHasScrolled] = useState(false);
   const lastScrollTime = useRef(0);
 
+  // Start connection when monitor opens, stop when closes
   useEffect(() => {
     startListening();
     return () => stopListening();
@@ -120,16 +121,9 @@ export const MonitorView = ({ onClose }) => {
           <div className="messages-container">
             <div className="messages-list" ref={messagesListRef}>
               {bubbles.map((bubble, index) => (
-                <div key={bubble.id || index} className={`message-bubble ${bubble.source || ''} ${bubble.final ? 'final' : 'pending'}`}> 
+                <div key={bubble.id || index} className={`message-bubble ${bubble.type || ''}`}> 
                   <div className="bubble-content">
-                    {bubble.isPartial ? (
-                      <>
-                        <span className="text-stable">{bubble.stableLen ? bubble.text.slice(0, bubble.stableLen) : ''}</span>
-                        <span className="text-pending">{bubble.stableLen ? bubble.text.slice(bubble.stableLen) : bubble.text}</span>
-                      </>
-                    ) : (
-                      <span className="text-stable">{bubble.text}</span>
-                    )}
+                    <span className="text-stable">{bubble.text}</span>
                   </div>
                   <div className="message-meta">
                     <span className="timestamp">{new Date(bubble.time || Date.now()).toLocaleTimeString()}</span>

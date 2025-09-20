@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useWhitelist } from './hooks/useWhitelist';
 import { useListening } from './hooks/useListening';
 
@@ -7,21 +7,26 @@ export const BootstrapConnect = () => {
   const { ensureWhitelisted } = useWhitelist();
   const { startListening, stopListening } = useListening({ autoConnect: true });
 
+  // Run only once on mount; dependencies are stable due to memoization
+  const ranRef = useRef(false);
   useEffect(() => {
-    let mounted = true;
+    if (ranRef.current) return;
+    ranRef.current = true;
+    let active = true;
     (async () => {
       try {
         await ensureWhitelisted();
-        if (mounted) startListening();
-      } catch (_) {
-        // swallow; useListening has its own retry logic
+        if (active) {
+          try { console.info('[BootstrapConnect] startListening once'); } catch(_) {}
+          startListening();
+        }
+      } catch (e) {
+        try { console.warn('[BootstrapConnect] ensureWhitelisted failed', e); } catch(_) {}
       }
     })();
-    return () => {
-      mounted = false;
-      stopListening();
-    };
-  }, [ensureWhitelisted, startListening, stopListening]);
+    return () => { active = false; stopListening(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return null;
 };
