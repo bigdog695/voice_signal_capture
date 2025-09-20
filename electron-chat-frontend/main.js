@@ -1,5 +1,45 @@
 const { app, BrowserWindow, Menu } = require('electron');
+const fs = require('fs');
 const path = require('path');
+
+// Ensure vendor React UMD assets exist (offline fallback) if missing.
+function ensureVendorReact() {
+  try {
+    const vendorDir = path.join(__dirname, 'vendor');
+    const reactFile = path.join(vendorDir, 'react.production.min.js');
+    const reactDomFile = path.join(vendorDir, 'react-dom.production.min.js');
+    console.log('[main] vendor check:', {
+      vendorDir,
+      reactFileExists: fs.existsSync(reactFile),
+      reactDomFileExists: fs.existsSync(reactDomFile)
+    });
+    if (fs.existsSync(reactFile) && fs.existsSync(reactDomFile)) {
+      console.log('[main] vendor React UMD already present');
+      return; // already present
+    }
+
+    // Attempt to copy from node_modules (dev or unpacked environment)
+    const nmReact = path.join(__dirname, 'node_modules', 'react', 'umd', 'react.production.min.js');
+    const nmReactDom = path.join(__dirname, 'node_modules', 'react-dom', 'umd', 'react-dom.production.min.js');
+    const sourcesState = {
+      nmReact,
+      nmReactExists: fs.existsSync(nmReact),
+      nmReactDom,
+      nmReactDomExists: fs.existsSync(nmReactDom)
+    };
+    console.log('[main] node_modules sources state:', sourcesState);
+    if (!sourcesState.nmReactExists || !sourcesState.nmReactDomExists) {
+      console.warn('[main] vendor React UMD missing and node_modules sources missing. Run npm install.');
+      return;
+    }
+    if (!fs.existsSync(vendorDir)) fs.mkdirSync(vendorDir, { recursive: true });
+    fs.copyFileSync(nmReact, reactFile);
+    fs.copyFileSync(nmReactDom, reactDomFile);
+    console.log('[main] Copied React UMD assets into vendor/');
+  } catch (e) {
+    console.warn('[main] ensureVendorReact failed:', e && e.message);
+  }
+}
 
 // Attempt to load local config module; if it isn't available (e.g. in some packaged builds),
 // fall back to safe defaults to avoid crashing the main process.
@@ -33,9 +73,10 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 700,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      enableRemoteModule: true
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+      sandbox: false
     },
     titleBarStyle: 'default',
     title: 'AI Chat - Copilot',
@@ -51,7 +92,15 @@ function createWindow() {
     const devURL = getDevServerUrl();
     mainWindow.loadURL(devURL).catch(() => {
       console.log('Dev server not available, loading fallback...');
-      mainWindow.loadFile('index.html');
+      // If a built dist exists, prefer loading it (it contains compiled assets).
+      const distIndex = path.join(__dirname, 'dist', 'index.html');
+      if (fs.existsSync(distIndex)) {
+        mainWindow.loadFile(distIndex).catch(() => {
+          mainWindow.loadFile('index.html');
+        });
+      } else {
+        mainWindow.loadFile('index.html');
+      }
     });
   } else {
     // 生产模式加载打包后的 React 入口
@@ -88,6 +137,8 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.warn('ensureUserConfigExists failed:', err && err.message);
   }
+  // Ensure vendor React assets exist for offline file:// fallback
+  ensureVendorReact();
   createWindow();
   createMenu();
 });

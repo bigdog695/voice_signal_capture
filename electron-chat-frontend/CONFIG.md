@@ -96,3 +96,22 @@ export USE_HTTPS=false
 - 配置更改后需要重启应用才能生效（除了应用内配置）
 - 确保配置的地址格式正确：`host:port`
 - HTTPS配置会同时影响HTTP和WebSocket连接协议
+
+## 离线支持（React UMD）
+
+为使应用在没有网络访问的环境下仍能展示回退的 React UI，我们引入了本地 UMD 版本的 React 和 ReactDOM：
+
+- 本地文件位置：`vendor/react.production.min.js` 和 `vendor/react-dom.production.min.js`
+- 在 `index.html` 的 file:// 分支会优先加载这两份本地文件；若不存在或加载失败会退回到 CDN；若 CDN 也不可用，则加载纯 JS 回退 `renderer.js`。
+
+如何生成本地 UMD 文件（推荐自动化）
+
+- 本仓库包含脚本：`scripts/download-umd.js`，它会从本地安装的 `node_modules` 复制 React/ReactDOM 的 UMD 生产构建到 `vendor/`（请先运行 `npm install`）。
+- 该脚本使应用在离线环境下可通过本地 UMD 文件运行回退 React UI。
+- 在 `package.json` 中已添加 `prepare` 脚本，会在 `npm install`（或显式运行 `npm run prepare`）时执行：
+
+  npm run prepare
+
+- 你也可以手动把 UMD 文件放到 `vendor/` 下；之后打包（electron-builder）时 `vendor/**` 会被包含到应用包中。
+
+注意：如果你需要完全离线打包（CI 构建环境无网络），请在 CI 流程中提前把 `vendor/` 目录包含进构建工件，或将 UMD 文件提交到仓库。

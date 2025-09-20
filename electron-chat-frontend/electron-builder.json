@@ -4,14 +4,16 @@
   "artifactName": "${productName}-${version}-${arch}.${ext}",
   "copyright": "Copyright © 2025 AI Chat",
   "directories": {
-    "output": "dist"
+    "output": "release"
   },
   "files": [
     "main.js",
+    "preload.js",
     "renderer.js",
     "index.html",
     "styles.css",
     "websocket-server-example.js",
+    "dist/**/*",
     "package.json",
     "node_modules/**/*"
   ],

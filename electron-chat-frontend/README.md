@@ -18,10 +18,24 @@
 - Node.js (版本 14 或更高)
 - npm 或 yarn
 
-### 安装依赖
-```bash
+### 清理旧产物并构建（建议）
+```powershell
 cd electron-chat-frontend
+# 清理旧的前端构建产物
+Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
+# 安装依赖并准备离线 UMD 资源
 npm install
+npm run prepare
+# 构建前端（Vite）
+npm run build:react
+# 打包 Electron 应用（输出到 release/）
+npm run pack
+```
+
+### 开发模式（同时启动 UI 与 Electron）
+```powershell
+cd electron-chat-frontend
+npm run dev:full
 ```
 
 ### 运行开发版本
@@ -33,6 +47,27 @@ npm run dev
 ```bash
 npm run build
 ```
+
+### 打包前确保离线资源
+离线运行依赖 `vendor/` 目录中的 React UMD 文件。构建/打包顺序建议：
+```bash
+npm install
+npm run prepare   # 复制 react*.js 并做大小完整性校验
+npm run build
+```
+`package.json` 中如需保证自动复制，可在自定义流水线里显式执行 `npm run prepare`。
+
+验证文件存在与大小（大概范围：react ≈45KB，react-dom ≈130KB）：
+```bash
+dir vendor
+```
+若大小明显小于 30KB / 80KB，则说明依赖损坏，需要：
+```bash
+Remove-Item -Recurse -Force node_modules
+npm install
+npm run prepare
+```
+
 
 ## 使用方法
 
@@ -139,10 +174,11 @@ wss.on('connection', (ws) => {
 electron-chat-frontend/
 ├── package.json          # 项目配置和依赖
 ├── main.js              # Electron主进程
-├── index.html           # 应用HTML页面
+├── index.html           # 最小HTML壳，只包含根节点与离线加载逻辑
 ├── styles.css           # 样式文件
-├── renderer.js          # 渲染进程脚本
-└── README.md           # 说明文档
+├── renderer-react.js    # 离线Fallback使用的 UMD 版 React 渲染入口（无需打包即可运行）
+├── vendor/              # 从 node_modules 复制的 React/ReactDOM UMD 离线资产
+└── README.md            # 说明文档
 ```
 
 ## 自定义配置
@@ -153,11 +189,25 @@ electron-chat-frontend/
 - **温度参数**: 控制回复的创造性（0-2）
 
 ### WebSocket设置
-- **服务器地址**: 可配置不同的后端地址
-- **自动重连**: 支持断线自动重连
-- **连接状态**: 实时显示连接状态
+- **服务器地址**: 可配置不同的后端地址（持久化于 localStorage + 用户配置文件）
+- **Listening 监听**: 提供单独 listening 通道的连接/停止与日志视图
+- **连接测试**: 测试按钮同时请求 /health 与 /listening WebSocket 探活
+- **事件日志**: 记录 open / message / close(code, reason) / error 事件
 
 ## 开发说明
+
+### React Only 渲染架构
+生产/开发模式使用 Vite 打包的 React 入口 (`src/main.jsx`)；在无 dev server（file:// 协议）且未构建 dist 的情况下，`index.html` 会加载本地 `vendor/react*.js` UMD 版本，并执行 `renderer-react.js`，它以 `document.getElementById('root')` 为挂载点完成与正式版本一致的 UI 与逻辑。已移除旧的纯 JavaScript DOM 版本（renderer.js）。
+
+### 离线 Fallback（可选）
+默认构建产物已经包含打包后的 React 代码，`loader.js` 已在生产 HTML 中移除以避免多余 vendor 404。若你需要一个“未构建 dist 也能启动”的离线回退模式，可在 `index.html` 中临时加入：
+```html
+<script type="module" src="./loader.js"></script>
+```
+前提：执行过 `npm run prepare`，确保 `vendor/react*.js` 存在。
+
+### 离线策略
+不依赖任何 CDN：React 与 ReactDOM 的 UMD 文件在 `npm install` 时通过 `prepare` 脚本从 `node_modules` 复制至 `vendor/`。安装、打包与运行均可在完全离线环境完成。
 
 ### 主要组件
 
@@ -194,6 +244,14 @@ electron-chat-frontend/
    - 确认Node.js版本兼容性
    - 重新安装依赖 `npm install`
    - 检查Electron版本
+
+## 安全说明（重要）
+- 主进程 `main.js` 已调整为更安全的默认配置：
+  - `nodeIntegration` 已禁用（`false`）
+  - `contextIsolation` 已启用（`true`）
+  - 新增 `preload.js`，通过 `contextBridge` 暴露最小化的、安全的通信 API（`window.electronAPI.send/on/once`）给渲染进程。
+- 推荐做法：不要在渲染器中直接调用 Node API 或 `require('electron')`。若必须，请在 `preload.js` 中实现受限的桥接函数并白名单渠道。
+- CSP：生产环境的 `dist/index.html` 已包含基本的 Content-Security-Policy meta，以减少脚本注入风险。你可以进一步收紧 `style-src` 与 `connect-src` 规则以适配你的后端域名。
 
 ## 许可证
 

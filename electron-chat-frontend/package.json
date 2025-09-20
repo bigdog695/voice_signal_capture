@@ -5,9 +5,9 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-  "dev": "electron . --dev",
+    "dev": "electron . --dev",
     "dev:ui": "vite",
-  "dev:electron": "wait-on tcp:5173 && electron . --dev",
+    "dev:electron": "wait-on tcp:5173 && electron . --dev",
     "dev:full": "concurrently -k \"npm:dev:ui\" \"npm:dev:electron\"",
     "build:react": "vite build",
     "build": "npm run build:react && electron-builder --config electron-builder.json",
@@ -16,7 +16,8 @@
     "build:linux": "npm run build:react && electron-builder --linux --config electron-builder.json",
     "pack": "npm run build:react && electron-builder --dir --config electron-builder.json",
     "dist": "npm run build:react && electron-builder --publish=never --config electron-builder.json",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps",
+    "prepare": "node scripts/download-umd.js"
   },
   "keywords": [
     "electron",
@@ -27,11 +28,11 @@
   "author": "Your Name",
   "license": "MIT",
   "devDependencies": {
+    "@vitejs/plugin-react": "^4.0.0",
+    "concurrently": "^8.2.2",
     "electron": "^25.0.0",
     "electron-builder": "^24.0.0",
     "vite": "^5.3.0",
-    "@vitejs/plugin-react": "^4.0.0",
-    "concurrently": "^8.2.2",
     "wait-on": "^7.0.1"
   },
   "dependencies": {
@@ -49,7 +50,8 @@
       "main.js",
       "dist/**",
       "styles.css",
-      "assets/**"
+      "assets/**",
+      "vendor/**"
     ],
     "win": {
       "target": "nsis",

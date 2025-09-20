@@ -4,106 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Chat (React)</title>
+  <!-- CSP: scripts only from self now that loader is external; allow inline styles only for existing css usage -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http: https: ws: wss:;" />
   <link rel="stylesheet" href="styles.css" />
+  <!-- Vite entry point: ensure React app code is bundled -->
+  <script type="module" src="/src/main.jsx"></script>
 </head>
 <body>
   <div id="root"></div>
-  <script type="module" src="./src/main.jsx"></script>
-</body>
-</html>
-                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                        <path d="M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8z"/>
-                                    </svg>
-                                </button>
-                            </div>
-                        </div>
-                        
-                        <div class="live-messages" id="liveMessages">
-                            <!-- 实时消息将在这里显示 -->
-                        </div>
-                    </div>
-                    
-                    <!-- 通话记录展示区域 -->
-                    <div class="call-display" id="callDisplay" style="display: none;">
-                        <div class="call-info" id="callInfo">
-                            <div class="call-metadata">
-                                <div class="call-duration" id="callDuration">Duration: --:--</div>
-                                <div class="call-date" id="callDate">Date: --</div>
-                            </div>
-                        </div>
-                        
-                        <div class="transcript-display" id="transcriptDisplay">
-                            <div class="transcript-section">
-                                <div class="speaker-label">User:</div>
-                                <div class="transcript-content" id="userTranscriptContent">
-                                    No user transcript available
-                                </div>
-                            </div>
-                            <div class="transcript-section">
-                                <div class="speaker-label">AI Assistant:</div>
-                                <div class="transcript-content" id="assistantTranscriptContent">
-                                    No assistant transcript available
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
 
-            </div>
-        </div>
-    </div>
-
-    <!-- 设置模态框 -->
-    <div class="modal" id="settingsModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>后端服务配置</h3>
-                <button class="close-btn" id="closeSettingsBtn">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="setting-group">
-                    <label for="backendHost">后端服务地址:</label>
-                    <input type="text" id="backendHost" placeholder="后端服务地址">
-                    <small class="setting-hint">请输入后端服务的主机地址和端口，例如：localhost:8000 或 192.168.1.100:8000</small>
-                </div>
-                <div class="setting-group">
-                    <label for="useHttps">使用 HTTPS/WSS:</label>
-                    <input type="checkbox" id="useHttps" class="setting-checkbox">
-                    <small class="setting-hint">勾选后将使用 HTTPS 和 WSS 协议连接后端</small>
-                </div>
-                <div class="connection-test">
-                    <button class="btn btn-secondary" id="testConnectionBtn">测试连接</button>
-                    <span id="connectionTestResult" class="connection-status"></span>
-                </div>
-                <div class="endpoint-preview">
-                    <h4>连接端点预览:</h4>
-                    <div class="endpoint-list">
-                        <div class="endpoint-item">
-                            <span class="endpoint-label">聊天服务:</span>
-                            <span id="chatEndpointPreview" class="endpoint-url">待配置</span>
-                        </div>
-                        <div class="endpoint-item">
-                            <span class="endpoint-label">语音识别:</span>
-                            <span id="asrEndpointPreview" class="endpoint-url">待配置</span>
-                        </div>
-                        <div class="endpoint-item">
-                            <span class="endpoint-label">本机监听:</span>
-                            <span id="listeningEndpointPreview" class="endpoint-url">待配置</span>
-                        </div>
-                        <div class="endpoint-item">
-                            <span class="endpoint-label">健康检查:</span>
-                            <span id="healthEndpointPreview" class="endpoint-url">待配置</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" id="cancelSettingsBtn">取消</button>
-                <button class="btn btn-primary" id="saveSettingsBtn">保存设置</button>
-            </div>
-        </div>
-    </div>
-
-    <script src="renderer.js"></script>
+  <!-- loader.js removed in production build to avoid redundant vendor fallback and 404s.
+    If you need offline (no dist assets) fallback, re-add: <script type="module" src="./loader.js"></script> -->
 </body>
 </html>
