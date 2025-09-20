@@ -72,10 +72,20 @@ async def _zmq_consume_loop():
     sub.setsockopt(zmq.SUBSCRIBE, b"")  # subscribe all
     sub.connect(ASR_EVENTS_ENDPOINT)
     rt_event('zmq_sub_connected', endpoint=ASR_EVENTS_ENDPOINT)
+    rt_event('zmq_consume_loop_start', endpoint=ASR_EVENTS_ENDPOINT)
 
     try:
         while True:
             msg = await sub.recv()
+            try:
+                if isinstance(msg, (bytes, bytearray)):
+                    raw_len = len(msg)
+                    raw_preview = msg[:200].decode('utf-8', errors='replace')
+                    rt_event('zmq_raw_msg_received', bytes=raw_len, preview=raw_preview)
+                else:
+                    rt_event('zmq_raw_msg_received', type=str(type(msg)))
+            except Exception as e:
+                rt_event('zmq_raw_log_error', error=str(e))
             try:
                 evt = json.loads(msg.decode('utf-8')) if isinstance(msg, (bytes, bytearray)) else msg
             except Exception:
@@ -83,7 +93,18 @@ async def _zmq_consume_loop():
                 if isinstance(msg, dict):
                     evt = msg
                 else:
+                    try:
+                        # log decode failure with preview
+                        preview = msg[:200].decode('utf-8', errors='replace') if isinstance(msg, (bytes, bytearray)) else str(msg)[:200]
+                        rt_event('zmq_json_decode_error', preview=preview)
+                    except Exception:
+                        rt_event('zmq_json_decode_error')
                     continue
+
+            try:
+                rt_event('zmq_evt_parsed', evt_type=evt.get('type'), peer_ip=evt.get('peer_ip'), source=evt.get('source'))
+            except Exception:
+                pass
 
             await _dispatch_asr_event(evt)
     except asyncio.CancelledError:
