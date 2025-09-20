@@ -2,7 +2,9 @@ import React, { createContext, useContext, useState, useCallback, useMemo } from
 
 const DEFAULT_CONFIG = {
   backendHost: 'localhost:8000',
-  useHttps: false
+  useHttps: false,
+  devServerHost: 'localhost:5173',
+  exampleServerHost: 'localhost:8080'
 };
 
 const ConfigContext = createContext(null);
@@ -10,6 +12,8 @@ const ConfigContext = createContext(null);
 export const ConfigProvider = ({ children }) => {
   const [backendHost, setBackendHost] = useState(localStorage.getItem('backendHost') || DEFAULT_CONFIG.backendHost);
   const [useHttps, setUseHttps] = useState(localStorage.getItem('useHttps') === 'true' || DEFAULT_CONFIG.useHttps);
+  const [devServerHost] = useState(localStorage.getItem('devServerHost') || DEFAULT_CONFIG.devServerHost);
+  const [exampleServerHost] = useState(localStorage.getItem('exampleServerHost') || DEFAULT_CONFIG.exampleServerHost);
 
   const saveConfig = useCallback((host, https) => {
     setBackendHost(host);
@@ -32,7 +36,7 @@ export const ConfigProvider = ({ children }) => {
     base: () => `${protocols.http}://${backendHost}`
   }), [protocols, backendHost]);
 
-  const value = { backendHost, useHttps, saveConfig, protocols, urls };
+  const value = { backendHost, useHttps, devServerHost, exampleServerHost, saveConfig, protocols, urls };
   return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;
 };
 

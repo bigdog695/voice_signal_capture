@@ -1,6 +1,28 @@
 const { app, BrowserWindow, Menu } = require('electron');
 const path = require('path');
 
+// Attempt to load local config module; if it isn't available (e.g. in some packaged builds),
+// fall back to safe defaults to avoid crashing the main process.
+let getDevServerUrl;
+let getConfig;
+let configModule = null;
+try {
+  // Resolve relative to this file's directory to be robust when packaged into an asar
+  configModule = require(path.join(__dirname, 'config'));
+  getDevServerUrl = configModule.getDevServerUrl;
+  getConfig = configModule.getConfig;
+} catch (err) {
+  console.warn('Could not load ./config module, falling back to defaults:', err && err.message);
+  const FALLBACK = {
+    backendHost: 'localhost:8000',
+    useHttps: false,
+    devServerHost: 'localhost:5173',
+    exampleServerHost: 'localhost:8080'
+  };
+  getConfig = () => FALLBACK;
+  getDevServerUrl = () => `${getConfig().useHttps ? 'https' : 'http'}://${getConfig().devServerHost}`;
+}
+
 let mainWindow;
 
 function createWindow() {
@@ -26,7 +48,7 @@ function createWindow() {
 
   const isDev = process.argv.includes('--dev');
   if (isDev) {
-    const devURL = 'http://localhost:5173';
+    const devURL = getDevServerUrl();
     mainWindow.loadURL(devURL).catch(() => {
       console.log('Dev server not available, loading fallback...');
       mainWindow.loadFile('index.html');
@@ -57,7 +79,18 @@ function createWindow() {
 }
 
 // Electron 初始化完成并准备创建浏览器窗口时调用此方法
-app.whenReady().then(createWindow);
+// Ensure user-editable config exists before creating app UI
+app.whenReady().then(async () => {
+  try {
+    if (configModule && typeof configModule.ensureUserConfigExists === 'function') {
+      await configModule.ensureUserConfigExists();
+    }
+  } catch (err) {
+    console.warn('ensureUserConfigExists failed:', err && err.message);
+  }
+  createWindow();
+  createMenu();
+});
 
 // 当全部窗口关闭时退出应用 (macOS 除外)
 app.on('window-all-closed', () => {
@@ -146,7 +179,3 @@ function createMenu() {
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
 }
-
-app.whenReady().then(() => {
-  createMenu();
-});

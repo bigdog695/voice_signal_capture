@@ -51,7 +51,7 @@ export const SettingsModal = ({ open, onClose }) => {
           <div className="setting-group">
             <label>后端服务地址:</label>
             <input value={host} onChange={e=>setHost(e.target.value)} />
-            <small className="setting-hint">示例: localhost:8000</small>
+            <small className="setting-hint">示例: your-host:8000</small>
           </div>
           <div className="setting-group">
             <label>使用 HTTPS/WSS:</label>

@@ -1,12 +1,28 @@
 const WebSocket = require('ws');
+const path = require('path');
+let config;
+try {
+  const cfg = require(path.join(__dirname, 'config'));
+  config = cfg.getConfig();
+} catch (err) {
+  console.warn('Could not load ./config module for websocket example, using defaults:', err && err.message);
+  config = {
+    backendHost: 'localhost:8000',
+    useHttps: false,
+    devServerHost: 'localhost:5173',
+    exampleServerHost: 'localhost:8080'
+  };
+}
+
+const [host, port] = (config.exampleServerHost || 'localhost:8080').split(':');
 
 // 创建WebSocket服务器
 const wss = new WebSocket.Server({ 
-    port: 8080,
+    port: parseInt(port) || 8080,
     host: '0.0.0.0'
 });
 
-console.log('WebSocket服务器启动在 ws://localhost:8080');
+console.log(`WebSocket服务器启动在 ws://${config.exampleServerHost}`);
 
 // 模拟通话记录数据
 const callRecords = [

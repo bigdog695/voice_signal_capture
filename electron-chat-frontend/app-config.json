@@ -1,0 +1,26 @@
+{
+  "default": {
+    "backendHost": "localhost:8000",
+    "useHttps": false,
+    "devServerHost": "localhost:5173",
+    "exampleServerHost": "localhost:8080"
+  },
+  "development": {
+    "backendHost": "localhost:8000",
+    "useHttps": false,
+    "devServerHost": "localhost:5173",
+    "exampleServerHost": "localhost:8080"
+  },
+  "production": {
+    "backendHost": "your-production-host:8000",
+    "useHttps": true,
+    "devServerHost": "localhost:5173",
+    "exampleServerHost": "localhost:8080"
+  },
+  "description": {
+    "backendHost": "后端服务地址 (格式: host:port)",
+    "useHttps": "是否使用HTTPS/WSS协议",
+    "devServerHost": "开发服务器地址 (仅在开发模式下使用)",
+    "exampleServerHost": "示例WebSocket服务器地址"
+  }
+}
