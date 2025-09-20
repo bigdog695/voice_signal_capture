@@ -18,6 +18,8 @@ log = logging.getLogger(LOG_NAME)
 # ================= Config =================
 # Where to subscribe ASR daemon events
 ASR_EVENTS_ENDPOINT = os.getenv("ASR_EVENTS_ENDPOINT", "tcp://127.0.0.1:5557")
+# Broadcast mode: if set to '1', every incoming ASR event is forwarded to all connected clients
+WS_BROADCAST_ALL = os.getenv("WS_BROADCAST_ALL", "0") == "1"
 
 app = FastAPI(title="Voice WS Server", version="1.0.0")
 app.add_middleware(
@@ -81,7 +83,19 @@ async def _zmq_consume_loop():
                 if isinstance(msg, (bytes, bytearray)):
                     raw_len = len(msg)
                     raw_preview = msg[:200].decode('utf-8', errors='replace')
-                    rt_event('zmq_raw_msg_received', bytes=raw_len, preview=raw_preview)
+                    text_preview = None
+                    # Try extract "text" field for more human readable log (unescaped)
+                    try:
+                        tmp_obj = json.loads(raw_preview)
+                        if isinstance(tmp_obj, dict) and 'text' in tmp_obj:
+                            # limit text preview length to 120 chars for safety
+                            text_preview = str(tmp_obj.get('text'))[:120]
+                    except Exception:
+                        pass
+                    if text_preview is not None:
+                        rt_event('zmq_raw_msg_received', bytes=raw_len, preview=raw_preview, text_preview=text_preview)
+                    else:
+                        rt_event('zmq_raw_msg_received', bytes=raw_len, preview=raw_preview)
                 else:
                     rt_event('zmq_raw_msg_received', type=str(type(msg)))
             except Exception as e:
@@ -122,12 +136,39 @@ async def _dispatch_asr_event(evt: Dict):
     # Expect simplified schema from daemon: {type, text, peer_ip, source}
     if not isinstance(evt, dict):
         return
-    if 'type' not in evt or 'peer_ip' not in evt:
+    if 'type' not in evt:
         return
-    target_ip = evt.get('peer_ip', 'unknown')
+    # In non-broadcast mode we require peer_ip to route; in broadcast mode we don't
+    if not WS_BROADCAST_ALL and 'peer_ip' not in evt:
+        return
 
-    # build target client list by IP
     clients_snapshot: List[Tuple[str, WebSocket]] = list(LISTENING_CLIENTS.items())
+
+    if WS_BROADCAST_ALL:
+        # Broadcast to all connected clients
+        if not clients_snapshot:
+            rt_event('broadcast_no_clients', total_clients=0)
+            return
+        rt_event('broadcast_event', total_clients=len(clients_snapshot), evt_type=evt.get('type'))
+        tasks: List[asyncio.Task] = []
+        for cid, ws in clients_snapshot:
+            tasks.append(asyncio.create_task(ws.send_text(json.dumps(evt, ensure_ascii=False))))
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            problem: Set[str] = set()
+            for idx, res in enumerate(results):
+                if isinstance(res, Exception) and idx < len(clients_snapshot):
+                    cid = clients_snapshot[idx][0]
+                    problem.add(cid)
+                    rt_event('broadcast_client_send_error', client_id=cid, error=str(res))
+            for pc in problem:
+                LISTENING_CLIENTS.pop(pc, None)
+                CLIENT_IP_MAPPING.pop(pc, None)
+                rt_event('client_removed_send_fail', client_id=pc, reason='broadcast_send_fail')
+        return
+
+    # --- Original targeted routing by peer_ip ---
+    target_ip = evt.get('peer_ip', 'unknown')
     target_clients: List[Tuple[str, WebSocket]] = []
     for cid, ws in clients_snapshot:
         if CLIENT_IP_MAPPING.get(cid) == target_ip:
@@ -241,6 +282,7 @@ if __name__ == "__main__":
     log.info("Voice WS Server - v1.0.0")
     log.info("========================================")
     log.info(f"ASR_EVENTS_ENDPOINT: {ASR_EVENTS_ENDPOINT}")
+    log.info(f"WS_BROADCAST_ALL: {WS_BROADCAST_ALL}")
     # Allow overriding listen port (default 8000) so frontend config can match dynamically.
     PORT = int(os.getenv("WS_SERVER_PORT", "8000"))
     try:

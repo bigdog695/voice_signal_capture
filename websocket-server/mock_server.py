@@ -102,13 +102,15 @@ async def _mock_event_loop():
             if not LISTENING_CLIENTS:
                 continue
             text = EVENT_TEXTS[idx % len(EVENT_TEXTS)]
+            # 交替 source: 偶数 -> citizen, 奇数 -> other
+            current_source = 'citizen' if (idx % 2) == 0 else 'other'
             idx += 1
             # 事件结构尽量贴近真实 main.py 中 dispatcher 预期
             base_evt = {
                 'type': 'asr_partial',
                 'text': text,
                 'peer_ip': None,  # 发送前填充
-                'source': 'mock'
+                'source': current_source
             }
             if EVENT_BROADCAST:
                 # 广播：复制并针对每个 client IP 设置 peer_ip
