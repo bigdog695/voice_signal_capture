@@ -1809,6 +1809,15 @@ body {
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
+/* Non-citizen (other) messages: right side, green style */
+.message-bubble.other {
+    background: linear-gradient(135deg, #10b981, #059669);
+    color: #ffffff;
+    align-self: flex-end;
+    border-left: none;
+    box-shadow: 0 1px 2px rgba(16, 185, 129, 0.4);
+}
+
 .message-bubble.hot-line {
     background: #007aff;
     color: #ffffff;

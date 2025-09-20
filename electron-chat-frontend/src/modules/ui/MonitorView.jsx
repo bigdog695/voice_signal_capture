@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useListening } from '../hooks/useListening';
+import { useHealth } from '../hooks/useHealth';
 
 export const MonitorView = ({ onClose }) => {
   const { bubbles, isListening, startListening, stopListening } = useListening();
+  const { ok: healthOk, checking: healthChecking } = useHealth({ intervalMs: 2000, successIntervalMs: 15000 });
   const messagesListRef = useRef(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [userHasScrolled, setUserHasScrolled] = useState(false);
@@ -90,9 +92,9 @@ export const MonitorView = ({ onClose }) => {
           <div className="header-info">
             <h3 className="monitor-title">实时通话监听</h3>
             <div className="connection-badge">
-              <div className={`status-dot ${isListening ? 'connected' : 'disconnected'}`}></div>
+              <div className={`status-dot ${isListening ? 'connected' : (healthOk ? 'connected' : 'disconnected')}`}></div>
               <span className="status-text">
-                {isListening ? '正在监听' : '未连接'}
+                {isListening ? '正在监听' : (healthOk ? '服务可用' : (healthChecking ? '检测中...' : '未连接'))}
               </span>
             </div>
           </div>
@@ -121,7 +123,7 @@ export const MonitorView = ({ onClose }) => {
           <div className="messages-container">
             <div className="messages-list" ref={messagesListRef}>
               {bubbles.map((bubble, index) => (
-                <div key={bubble.id || index} className={`message-bubble ${bubble.type || ''}`}> 
+                <div key={bubble.id || index} className={`message-bubble ${bubble.role || 'other'}`}> 
                   <div className="bubble-content">
                     <span className="text-stable">{bubble.text}</span>
                   </div>

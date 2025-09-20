@@ -3,7 +3,7 @@ import { useConfig } from '../config/ConfigContext';
 
 const ListeningContext = createContext(null);
 
-export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, children, maxBubbles = 20 }) => {
+export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, children, maxBubbles = 50 }) => {
   const { urls } = useConfig();
   const wsRef = useRef(null);
   const [status, setStatus] = useState('disconnected');
@@ -16,11 +16,13 @@ export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, child
   const seqRef = useRef(0);
   // Simplified: directly append each incoming ASR message (partial or update) as a new bubble
   const appendBubble = useCallback((text, type, source) => {
+    const role = source === 'citizen' ? 'citizen' : 'other';
     const bubble = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
       text: text || '',
       type,
       source: source || 'asr',
+      role,
       time: new Date().toISOString()
     };
     setBubbles(prev => {
