@@ -31,6 +31,11 @@ export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, child
     });
   }, [maxBubbles]);
 
+  const clearBubbles = useCallback(() => {
+    setBubbles([]);
+    console.info('[ListeningWS] bubbles cleared');
+  }, []);
+
   const stopHeartbeat = useCallback(() => { if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; } }, []);
   const startHeartbeat = useCallback(() => {
     stopHeartbeat();
@@ -114,7 +119,13 @@ export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, child
     return () => { disconnect(); };
   }, [disconnect]);
 
-  const value = { status, bubbles, isListening: status === 'connected', startListening: connect, stopListening: disconnect, connect, disconnect };
+  // Expose a dev helper for quick manual clearing in the browser console
+  useEffect(() => {
+    if (typeof window !== 'undefined' && process && process.env && process.env.NODE_ENV !== 'production') {
+      window.__LISTENING_CLEAR = clearBubbles;
+    }
+  }, [clearBubbles]);
+  const value = { status, bubbles, isListening: status === 'connected', startListening: connect, stopListening: disconnect, connect, disconnect, clearBubbles };
   return <ListeningContext.Provider value={value}>{children}</ListeningContext.Provider>;
 };
 
