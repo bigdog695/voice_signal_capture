@@ -22,7 +22,7 @@ log = logging.getLogger(LOG_NAME)
 INPUT_ZMQ_ENDPOINT = os.getenv("INPUT_ZMQ_ENDPOINT", "tcp://0.0.0.0:5556")
 
 # Output ZMQ endpoint to publish recognized text events (WS server subscribes)
-OUTPUT_ZMQ_ENDPOINT = os.getenv("OUTPUT_ZMQ_ENDPOINT", "tcp://0.0.0.0:5557")
+OUTPUT_ZMQ_ENDPOINT = os.getenv("OUTPUT_ZMQ_ENDPOINT", "tcp://100.120.2.227:5557")
 
 # Model settings
 # Default to non-streaming model as requested
@@ -155,7 +155,7 @@ def main():
 
     try:
         pull_sock.bind(INPUT_ZMQ_ENDPOINT)
-        pub_sock.bind(OUTPUT_ZMQ_ENDPOINT)
+        pub_sock.connect(OUTPUT_ZMQ_ENDPOINT)
         rt_event("daemon_bind_ok", pull=INPUT_ZMQ_ENDPOINT, pub=OUTPUT_ZMQ_ENDPOINT)
     except Exception as e:
         rt_event("daemon_bind_error", error=str(e))
@@ -210,7 +210,7 @@ def main():
                             text_len=len(txt),
                             text_preview=(txt[:120] + ("…" if len(txt) > 120 else ""))
                         )
-                        pub_sock.send_json(event)
+                        pub_sock.send_json(event, ensure_ascii=False)
                     except Exception as e:
                         rt_event('pub_send_error', error=str(e))
 
@@ -222,7 +222,7 @@ def main():
                     'source': source,
                 }
                 try:
-                    pub_sock.send_json(finish_evt)
+                    pub_sock.send_json(finish_evt, ensure_ascii=False)
                 except Exception as e:
                     rt_event('pub_send_error', error=str(e))
                 st['chunks'] = 0

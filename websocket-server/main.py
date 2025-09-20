@@ -17,7 +17,7 @@ log = logging.getLogger(LOG_NAME)
 
 # ================= Config =================
 # Where to subscribe ASR daemon events
-ASR_EVENTS_ENDPOINT = os.getenv("ASR_EVENTS_ENDPOINT", "tcp://127.0.0.1:5557")
+ASR_EVENTS_ENDPOINT = os.getenv("ASR_EVENTS_ENDPOINT", "tcp://0.0.0.0:5557")
 # Broadcast mode: if set to '1', every incoming ASR event is forwarded to all connected clients
 WS_BROADCAST_ALL = os.getenv("WS_BROADCAST_ALL", "0") == "1"
 
@@ -72,7 +72,7 @@ async def _zmq_consume_loop():
     sub = ctx.socket(zmq.SUB)
     sub.setsockopt(zmq.LINGER, 0)
     sub.setsockopt(zmq.SUBSCRIBE, b"")  # subscribe all
-    sub.connect(ASR_EVENTS_ENDPOINT)
+    sub.bind(ASR_EVENTS_ENDPOINT)
     rt_event('zmq_sub_connected', endpoint=ASR_EVENTS_ENDPOINT)
     rt_event('zmq_consume_loop_start', endpoint=ASR_EVENTS_ENDPOINT)
 
