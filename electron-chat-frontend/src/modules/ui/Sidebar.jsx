@@ -1,10 +1,32 @@
-import React from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useHealth } from '../hooks/useHealth';
 
-export const Sidebar = ({ onOpenSettings, onShowMonitor }) => {
+export const Sidebar = ({ onOpenSettings, onShowMonitor, onSelectHistory }) => {
   const { ok: healthOk, checking } = useHealth({ intervalMs: 2000, successIntervalMs: 15000 });
   const statusClass = healthOk ? 'connected' : 'disconnected';
   const statusText = healthOk ? '服务可用' : (checking ? '检测中...' : '未连接');
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  const loadHistoryList = useCallback(async () => {
+    if (!window.electronAPI || !window.electronAPI.invoke) return;
+    try {
+      setLoadingHistory(true);
+      const list = await window.electronAPI.invoke('history:list');
+      setHistory(Array.isArray(list) ? list : []);
+    } catch (e) {
+      console.warn('[Sidebar] loadHistoryList failed', e && e.message);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadHistoryList();
+    const id = setInterval(loadHistoryList, 15000);
+    return () => clearInterval(id);
+  }, [loadHistoryList]);
+
   return (
     <div className="sidebar-modern">
       <div className="sidebar-header-modern">
@@ -23,30 +45,47 @@ export const Sidebar = ({ onOpenSettings, onShowMonitor }) => {
           <h2>通话记录</h2>
         </div>
       </div>
-      
       <div className="chat-history-modern">
-        <div className="empty-history">
-          <div className="empty-history-icon">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
-              <path d="M8 12H16M8 16H16M6 20H18C19.1046 20 20 19.1046 20 18V6C20 4.89543 19.1046 4 18 4H6C4.89543 4 4 4.89543 4 6V18C4 19.1046 4.89543 20 6 20Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
+        {history.length === 0 && (
+          <div className="empty-history">
+            <div className="empty-history-icon">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
+                <path d="M8 12H16M8 16H16M6 20H18C19.1046 20 20 19.1046 20 18V6C20 4.89543 19.1046 4 18 4H6C4.89543 4 4 4.89543 4 6V18C4 19.1046 4.89543 20 6 20Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </div>
+            <p>暂无通话记录</p>
+            <span>新的通话记录将在此显示</span>
           </div>
-          <p>暂无通话记录</p>
-          <span>新的通话记录将在此显示</span>
-        </div>
+        )}
+        {history.length > 0 && (
+          <ul className="history-list">
+            {history.map(item => (
+              <li key={item.id} className="history-item" onClick={async () => {
+                if (!window.electronAPI || !window.electronAPI.invoke) return;
+                try {
+                  const data = await window.electronAPI.invoke('history:load', item.id);
+                  onSelectHistory && onSelectHistory(data);
+                } catch (e) {
+                  console.warn('[Sidebar] load history failed', e && e.message);
+                }
+              }}>
+                <div className="history-name">{item.id}</div>
+                <div className="history-meta">{Math.round(item.size/1024)} KB</div>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
-      
       <div className="sidebar-footer-modern">
         <div className="connection-status-modern">
           <div className={`status-indicator-modern ${statusClass}`}>
             <div className="status-dot-modern"></div>
           </div>
-            <div className="status-info">
-              <span className="status-label">连接状态</span>
-              <span className="status-text">{statusText}</span>
-            </div>
+          <div className="status-info">
+            <span className="status-label">连接状态</span>
+            <span className="status-text">{statusText}</span>
+          </div>
         </div>
-        
         <div className="action-buttons">
           <button className="primary-action-btn" onClick={onShowMonitor}>
             <div className="btn-icon">
@@ -61,7 +100,6 @@ export const Sidebar = ({ onOpenSettings, onShowMonitor }) => {
             </div>
           </button>
         </div>
-        
         <button className="settings-btn-modern" onClick={onOpenSettings}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
             <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" stroke="currentColor" strokeWidth="1.5"/>

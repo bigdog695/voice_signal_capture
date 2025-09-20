@@ -95,6 +95,7 @@ def _client_ip_from_ws(ws: WebSocket) -> str:
 async def _mock_event_loop():
     """周期性构造模拟 ASR 事件并分发。"""
     idx = 0
+    cycle_count = 0  # how many full text cycles completed
     rt_event('mock_loop_start', interval=EVENT_INTERVAL, broadcast=EVENT_BROADCAST)
     try:
         while True:
@@ -133,6 +134,38 @@ async def _mock_event_loop():
                     await ws.send_text(json.dumps(evt, ensure_ascii=False))
                 except Exception as e:
                     rt_event('mock_unicast_error', client_id=cid, error=str(e))
+
+            # 当完成一个完整文本列表循环后，发送 call_finished 标志
+            if idx % len(EVENT_TEXTS) == 0:
+                cycle_count += 1
+                finished_evt_template = {
+                    'type': 'call_finished',
+                    'text': '',
+                    'source': 'system'
+                }
+                if EVENT_BROADCAST:
+                    tasks_finish: List[asyncio.Task] = []
+                    for cid, ws in list(LISTENING_CLIENTS.items()):
+                        peer_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
+                        fevt = {**finished_evt_template, 'peer_ip': peer_ip}
+                        rt_event('mock_call_finished_broadcast', client_id=cid, peer_ip=peer_ip, cycle=cycle_count)
+                        tasks_finish.append(asyncio.create_task(ws.send_text(json.dumps(fevt, ensure_ascii=False))))
+                    if tasks_finish:
+                        await asyncio.gather(*tasks_finish, return_exceptions=True)
+                else:
+                    # 在单播模式选择一个客户端发送结束
+                    if LISTENING_CLIENTS:
+                        import random as _r
+                        cid2, ws2 = _r.choice(list(LISTENING_CLIENTS.items()))
+                        peer_ip2 = CLIENT_IP_MAPPING.get(cid2, 'unknown')
+                        fevt = {**finished_evt_template, 'peer_ip': peer_ip2}
+                        rt_event('mock_call_finished_unicast', client_id=cid2, peer_ip=peer_ip2, cycle=cycle_count)
+                        try:
+                            await ws2.send_text(json.dumps(fevt, ensure_ascii=False))
+                        except Exception as e:
+                            rt_event('mock_call_finished_unicast_error', client_id=cid2, error=str(e))
+                # 可选：在结束后插入一个额外的间隔，模拟通话间歇
+                await asyncio.sleep(max(0.5, EVENT_INTERVAL * 0.5))
     except asyncio.CancelledError:
         rt_event('mock_loop_cancel')
     finally:

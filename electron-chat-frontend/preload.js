@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Whitelist channels if needed
     ipcRenderer.send(channel, ...args);
   },
+  invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
   on: (channel, listener) => {
     const subscription = (_, ...rest) => listener(...rest);
     ipcRenderer.on(channel, subscription);

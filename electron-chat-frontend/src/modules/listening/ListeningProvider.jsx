@@ -29,6 +29,11 @@ export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, child
       const next = [...prev, bubble];
       return next.length > maxBubbles ? next.slice(next.length - maxBubbles) : next;
     });
+    try {
+      if (window && window.electronAPI && typeof window.electronAPI.send === 'function') {
+        window.electronAPI.send('listening:event', bubble);
+      }
+    } catch(_) {}
   }, [maxBubbles]);
 
   const clearBubbles = useCallback(() => {
@@ -79,6 +84,10 @@ export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, child
           case 'asr_partial':
             appendBubble(data.text, 'asr_partial', data.source || 'mock');
             break;
+          case 'call_finished':
+            // Append an end-of-call marker bubble (no scrolling logic change here)
+            appendBubble('（结束）', 'call_finished', data.source || 'asr');
+            break;
           default: break;
         }
       };
@@ -121,7 +130,7 @@ export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, child
 
   // Expose a dev helper for quick manual clearing in the browser console
   useEffect(() => {
-    if (typeof window !== 'undefined' && process && process.env && process.env.NODE_ENV !== 'production') {
+    if (typeof window !== 'undefined' && typeof process !== 'undefined' && process?.env && process.env.NODE_ENV !== 'production') {
       window.__LISTENING_CLEAR = clearBubbles;
     }
   }, [clearBubbles]);

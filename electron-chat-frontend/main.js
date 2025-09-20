@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -230,3 +230,85 @@ function createMenu() {
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
 }
+
+let conversationsDir; // path to store conversation files
+function ensureConversationsDir() {
+  try {
+    if (!conversationsDir) {
+      conversationsDir = path.join(app.getPath('userData'), 'conversations');
+    }
+    if (!fs.existsSync(conversationsDir)) fs.mkdirSync(conversationsDir, { recursive: true });
+    return conversationsDir;
+  } catch (e) {
+    console.warn('[main] ensureConversationsDir failed', e && e.message);
+    return null;
+  }
+}
+
+// Maintain current active conversation file handle metadata
+let activeConv = null; // { id, filePath, createdAt, lastEventTs }
+function startConversationIfNeeded(ts) {
+  ensureConversationsDir();
+  if (activeConv) return activeConv;
+  const id = new Date(ts || Date.now()).toISOString().replace(/[:.]/g, '-');
+  const filePath = path.join(conversationsDir, id + '.ndjson');
+  activeConv = { id, filePath, createdAt: Date.now(), lastEventTs: Date.now() };
+  fs.appendFileSync(filePath, JSON.stringify({ system: 'conversation_start', ts: new Date().toISOString() }) + '\n', 'utf8');
+  return activeConv;
+}
+function appendConversationEvent(evt) {
+  try {
+    startConversationIfNeeded(evt.ts || Date.now());
+    if (!activeConv) return;
+    activeConv.lastEventTs = Date.now();
+    fs.appendFileSync(activeConv.filePath, JSON.stringify(evt, null, 0) + '\n', 'utf8');
+  } catch (e) {
+    console.warn('[main] appendConversationEvent failed', e && e.message);
+  }
+}
+function finalizeConversationIfNeeded(reason) {
+  if (!activeConv) return;
+  try {
+    fs.appendFileSync(activeConv.filePath, JSON.stringify({ system: 'conversation_end', reason: reason || 'call_finished', ts: new Date().toISOString() }) + '\n', 'utf8');
+  } catch (e) {
+    console.warn('[main] finalizeConversationIfNeeded write failed', e && e.message);
+  }
+  activeConv = null;
+}
+
+ipcMain.on('listening:event', (_ev, data) => {
+  // data = { type, text, role, source, time, peer_ip? }
+  try {
+    appendConversationEvent(data);
+    if (data.type === 'call_finished') {
+      finalizeConversationIfNeeded('call_finished');
+    }
+  } catch (e) {
+    console.warn('[main] listening:event handling failed', e && e.message);
+  }
+});
+ipcMain.handle('history:list', async () => {
+  ensureConversationsDir();
+  const files = fs.readdirSync(conversationsDir).filter(f => f.endsWith('.ndjson'));
+  return files.sort().reverse().map(f => {
+    const full = path.join(conversationsDir, f);
+    const stat = fs.statSync(full);
+    return { id: f.replace(/\.ndjson$/, ''), file: f, mtime: stat.mtimeMs, size: stat.size };
+  });
+});
+ipcMain.handle('history:load', async (_e, id) => {
+  ensureConversationsDir();
+  const filePath = path.join(conversationsDir, id + '.ndjson');
+  if (!fs.existsSync(filePath)) return { error: 'not_found' };
+  const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/).filter(Boolean).map(l => {
+    try { return JSON.parse(l); } catch { return { raw: l }; }
+  });
+  return { id, events: lines };
+});
+
+// Optional timeout to auto-finalize stale conversation (e.g., no events for 5 minutes)
+setInterval(() => {
+  if (activeConv && Date.now() - activeConv.lastEventTs > 5 * 60 * 1000) {
+    finalizeConversationIfNeeded('idle_timeout');
+  }
+}, 60 * 1000);
