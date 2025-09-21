@@ -1,4 +1,9 @@
 import os
+# Suppress all progress bars before any imports
+os.environ.setdefault("TQDM_DISABLE", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+
 import json
 import time
 import logging
@@ -15,6 +20,14 @@ import math
 LOG_NAME = "ASRDaemon"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger(LOG_NAME)
+
+# Suppress root logger messages from funasr decoding
+class FunasrFilter(logging.Filter):
+    def filter(self, record):
+        message = record.getMessage()
+        return "decoding, utt:" not in message
+
+logging.getLogger().addFilter(FunasrFilter())
 
 
 # ================= Config =================
@@ -202,14 +215,6 @@ def main():
                         'source': source,
                     }
                     try:
-                        # Log before publish to ensure visibility even if PUB fails
-                        rt_event(
-                            "asr_text_recognized",
-                            peer_ip=peer_ip,
-                            source=source,
-                            text_len=len(txt),
-                            text_preview=(txt[:120] + ("…" if len(txt) > 120 else ""))
-                        )
                         pub_sock.send_json(event, ensure_ascii=False)
                     except Exception as e:
                         rt_event('pub_send_error', error=str(e))
