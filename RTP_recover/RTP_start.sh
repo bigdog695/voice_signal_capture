@@ -1,0 +1,1 @@
+/root/miniconda3/envs/py310/bin/python3 recover_in_sender.py --zmq-endpoint tcp://100.120.241.10:5556 --chunk-seconds 2.0
