@@ -18,8 +18,39 @@ import math
 
 # ================= Logging =================
 LOG_NAME = "ASRDaemon"
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+
+# --- Logging Setup ---
+# Create logs directory. This will be created inside the 'backend-daemon' directory.
+script_dir = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(script_dir, "daemon_logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# Log file with date
+log_file_path = os.path.join(LOG_DIR, f"{datetime.now().strftime('%Y-%m-%d')}.log")
+
 log = logging.getLogger(LOG_NAME)
+log.setLevel(logging.INFO)
+log.propagate = False
+
+if log.hasHandlers():
+    log.handlers.clear()
+
+# File handler
+file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
+file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+log.addHandler(file_handler)
+
+# Filter to exclude 'rt_event' logs from console
+class NoRTFilter(logging.Filter):
+    def filter(self, record):
+        return not record.getMessage().startswith('RT ')
+
+# Stream handler
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+stream_handler.addFilter(NoRTFilter())
+log.addHandler(stream_handler)
+# --- End Logging Setup ---
 
 # Suppress root logger messages from funasr decoding
 class FunasrFilter(logging.Filter):
