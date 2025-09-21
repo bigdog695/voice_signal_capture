@@ -11,8 +11,44 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 LOG_NAME = "WSServer"
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+
+# --- Logging Setup ---
+# Create logs directory. This will be created inside the 'websocket-server' directory.
+script_dir = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(script_dir, "main_logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# Log file with date
+log_file_path = os.path.join(LOG_DIR, f"{datetime.now().strftime('%Y-%m-%d')}.log")
+
 log = logging.getLogger(LOG_NAME)
+log.setLevel(logging.INFO)
+
+# Prevent propagation to uvicorn's root logger to avoid duplicate messages.
+# Uvicorn will configure the root logger, and by default, our logger would propagate messages to it.
+log.propagate = False
+
+# On hot-reloads, uvicorn re-imports the module. We need to clear existing handlers
+# to prevent adding duplicate handlers and getting multiple log messages.
+if log.hasHandlers():
+    log.handlers.clear()
+
+# Create file handler to write logs to a file
+file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
+file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+log.addHandler(file_handler)
+
+# Filter to prevent rt_event logs from appearing in the console
+class NoRTFilter(logging.Filter):
+    def filter(self, record):
+        return not record.getMessage().startswith('RT ')
+
+# Create stream handler to continue logging to the console
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+stream_handler.addFilter(NoRTFilter())
+log.addHandler(stream_handler)
+# --- End Logging Setup ---
 
 
 # ================= Config =================
