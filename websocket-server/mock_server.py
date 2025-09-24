@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import asyncio
 import logging
@@ -7,6 +8,13 @@ from typing import Dict, Optional, Set, Tuple, List
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.abspath(os.path.join(script_dir, ".."))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
+from common.logging_utils import log_event
 
 """
 Mock WebSocket Server
@@ -66,14 +74,6 @@ CLIENT_IP_MAPPING: Dict[str, str] = {}
 MOCK_TASK: Optional[asyncio.Task] = None
 
 
-def rt_event(event: str, **fields):
-    payload = {"evt": event, "ts": datetime.utcnow().isoformat() + "Z", **fields}
-    try:
-        log.info("RT " + json.dumps(payload, ensure_ascii=False))
-    except Exception:
-        log.info(f"RT {{'evt':'{event}','error':'log_serialize_failed'}}")
-
-
 def _client_ip_from_ws(ws: WebSocket) -> str:
     ip = "unknown"
     try:
@@ -90,7 +90,7 @@ def _client_ip_from_ws(ws: WebSocket) -> str:
                 if xri:
                     ip = xri
     except Exception as e:
-        rt_event('ip_extraction_error', error=str(e))
+        log_event(log, 'ip_extraction_error', error=str(e))
     return ip
 
 
@@ -98,7 +98,7 @@ async def _mock_event_loop():
     """周期性构造模拟 ASR 事件并分发。"""
     idx = 0
     cycle_count = 0  # how many full text cycles completed
-    rt_event('mock_loop_start', interval=EVENT_INTERVAL, broadcast=EVENT_BROADCAST, cycles_per_call=CYCLES_PER_CALL)
+    log_event(log, 'mock_loop_start', interval=EVENT_INTERVAL, broadcast=EVENT_BROADCAST, cycles_per_call=CYCLES_PER_CALL)
     try:
         while True:
             await asyncio.sleep(EVENT_INTERVAL)
@@ -121,7 +121,7 @@ async def _mock_event_loop():
                 for cid, ws in list(LISTENING_CLIENTS.items()):
                     peer_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
                     evt = {**base_evt, 'peer_ip': peer_ip}
-                    rt_event('mock_evt_broadcast', client_id=cid, peer_ip=peer_ip)
+                    log_event(log, 'mock_evt_broadcast', client_id=cid, peer_ip=peer_ip)
                     tasks.append(asyncio.create_task(ws.send_text(json.dumps(evt, ensure_ascii=False))))
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)
@@ -131,16 +131,16 @@ async def _mock_event_loop():
                 cid, ws = random.choice(list(LISTENING_CLIENTS.items()))
                 peer_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
                 evt = {**base_evt, 'peer_ip': peer_ip}
-                rt_event('mock_evt_unicast', client_id=cid, peer_ip=peer_ip)
+                log_event(log, 'mock_evt_unicast', client_id=cid, peer_ip=peer_ip)
                 try:
                     await ws.send_text(json.dumps(evt, ensure_ascii=False))
                 except Exception as e:
-                    rt_event('mock_unicast_error', client_id=cid, error=str(e))
+                    log_event(log, 'mock_unicast_error', client_id=cid, error=str(e))
 
             # 当完成一个完整文本列表循环后，判断是否需要发送 call_finished
             if idx % len(EVENT_TEXTS) == 0:
                 cycle_count += 1
-                rt_event('mock_cycle_complete', cycle_count=cycle_count, cycles_per_call=CYCLES_PER_CALL)
+                log_event(log, 'mock_cycle_complete', cycle_count=cycle_count, cycles_per_call=CYCLES_PER_CALL)
                 if cycle_count >= CYCLES_PER_CALL:
                     finished_evt_template = {
                         'type': 'call_finished',
@@ -152,7 +152,7 @@ async def _mock_event_loop():
                         for cid, ws in list(LISTENING_CLIENTS.items()):
                             peer_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
                             fevt = {**finished_evt_template, 'peer_ip': peer_ip}
-                            rt_event('mock_call_finished_broadcast', client_id=cid, peer_ip=peer_ip, cycle=cycle_count)
+                            log_event(log, 'mock_call_finished_broadcast', client_id=cid, peer_ip=peer_ip, cycle=cycle_count)
                             tasks_finish.append(asyncio.create_task(ws.send_text(json.dumps(fevt, ensure_ascii=False))))
                         if tasks_finish:
                             await asyncio.gather(*tasks_finish, return_exceptions=True)
@@ -163,19 +163,19 @@ async def _mock_event_loop():
                             cid2, ws2 = _r.choice(list(LISTENING_CLIENTS.items()))
                             peer_ip2 = CLIENT_IP_MAPPING.get(cid2, 'unknown')
                             fevt = {**finished_evt_template, 'peer_ip': peer_ip2}
-                            rt_event('mock_call_finished_unicast', client_id=cid2, peer_ip=peer_ip2, cycle=cycle_count)
+                            log_event(log, 'mock_call_finished_unicast', client_id=cid2, peer_ip=peer_ip2, cycle=cycle_count)
                             try:
                                 await ws2.send_text(json.dumps(fevt, ensure_ascii=False))
                             except Exception as e:
-                                rt_event('mock_call_finished_unicast_error', client_id=cid2, error=str(e))
+                                log_event(log, 'mock_call_finished_unicast_error', client_id=cid2, error=str(e))
                     # reset for next call
                     cycle_count = 0
                     # 可选：在结束后插入一个额外的间隔，模拟通话间歇
                     await asyncio.sleep(max(0.5, EVENT_INTERVAL * 0.5))
     except asyncio.CancelledError:
-        rt_event('mock_loop_cancel')
+        log_event(log, 'mock_loop_cancel')
     finally:
-        rt_event('mock_loop_exit')
+        log_event(log, 'mock_loop_exit')
 
 
 @app.on_event("startup")
@@ -183,13 +183,13 @@ async def startup_event():
     # Self-check for websockets library presence (similar to real server)
     try:
         import websockets  # noqa: F401
-        rt_event('websockets_lib_detected', version=getattr(__import__('websockets'), '__version__', 'unknown'))
+        log_event(log, 'websockets_lib_detected', version=getattr(__import__('websockets'), '__version__', 'unknown'))
     except Exception as e:
-        rt_event('websockets_lib_missing', error=str(e))
+        log_event(log, 'websockets_lib_missing', error=str(e))
     global MOCK_TASK
     if MOCK_TASK is None or MOCK_TASK.done():
         MOCK_TASK = asyncio.create_task(_mock_event_loop())
-        rt_event('mock_loop_started')
+        log_event(log, 'mock_loop_started')
 
 
 @app.on_event("shutdown")
@@ -220,7 +220,7 @@ async def websocket_listening_endpoint(websocket: WebSocket):
 
     LISTENING_CLIENTS[client_id] = websocket
     CLIENT_IP_MAPPING[client_id] = client_ip
-    rt_event('client_connect', client_id=client_id, client_ip=client_ip, total_clients=len(LISTENING_CLIENTS))
+    log_event(log, 'client_connect', client_id=client_id, client_ip=client_ip, total_clients=len(LISTENING_CLIENTS))
 
     last_activity = datetime.utcnow()
 
@@ -241,12 +241,12 @@ async def websocket_listening_endpoint(websocket: WebSocket):
             except asyncio.TimeoutError:
                 # 空闲检测（仅记录日志，不强制断开）
                 if (datetime.utcnow() - last_activity).total_seconds() > CLIENT_IDLE_TIMEOUT:
-                    rt_event('client_idle', client_id=client_id, idle_sec=(datetime.utcnow() - last_activity).total_seconds())
+                    log_event(log, 'client_idle', client_id=client_id, idle_sec=(datetime.utcnow() - last_activity).total_seconds())
                 continue
             except WebSocketDisconnect:
                 break
             except Exception as e:
-                rt_event('client_recv_error', client_id=client_id, error=str(e))
+                log_event(log, 'client_recv_error', client_id=client_id, error=str(e))
                 break
             try:
                 data = json.loads(msg)
@@ -255,17 +255,17 @@ async def websocket_listening_endpoint(websocket: WebSocket):
             msg_type = data.get('type')
             if msg_type == 'ping':
                 await websocket.send_text(json.dumps({'type': 'pong', 'ts': datetime.utcnow().isoformat() + 'Z'}))
-                rt_event('client_ping', client_id=client_id)
+                log_event(log, 'client_ping', client_id=client_id)
             elif msg_type == 'stop_listening':
                 await websocket.send_text(json.dumps({'type': 'stopped', 'ts': datetime.utcnow().isoformat() + 'Z'}))
                 break
             else:
-                rt_event('client_msg_unknown', client_id=client_id, raw=msg_type)
+                log_event(log, 'client_msg_unknown', client_id=client_id, raw=msg_type)
     finally:
         hb_task.cancel()
         LISTENING_CLIENTS.pop(client_id, None)
         CLIENT_IP_MAPPING.pop(client_id, None)
-        rt_event('client_disconnect', client_id=client_id, client_ip=client_ip, remaining=len(LISTENING_CLIENTS))
+    log_event(log, 'client_disconnect', client_id=client_id, client_ip=client_ip, remaining=len(LISTENING_CLIENTS))
 
 
 if __name__ == "__main__":
@@ -276,7 +276,7 @@ if __name__ == "__main__":
     log.info(f"PORT: {SERVER_PORT}")
     log.info(f"EVENT_INTERVAL: {EVENT_INTERVAL}s | BROADCAST: {EVENT_BROADCAST}")
     try:
-        rt_event('server_starting', port=SERVER_PORT, host='0.0.0.0')
+        log_event(log, 'server_starting', port=SERVER_PORT, host='0.0.0.0')
     except Exception:
         pass
     uvicorn.run("mock_server:app", host="0.0.0.0", port=SERVER_PORT, reload=True, log_level="info")

@@ -4,11 +4,18 @@ os.environ.setdefault("TQDM_DISABLE", "1")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 
+import sys
 import json
 import time
 import logging
-from datetime import datetime
 from typing import Dict, Tuple, Optional
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.abspath(os.path.join(script_dir, ".."))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
+from common.logging_utils import configure_rotating_logger, NoRTFilter, log_event
 
 import numpy as np
 import scipy.signal
@@ -21,12 +28,8 @@ LOG_NAME = "ASRDaemon"
 
 # --- Logging Setup ---
 # Create logs directory. This will be created inside the 'backend-daemon' directory.
-script_dir = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(script_dir, "daemon_logs")
 os.makedirs(LOG_DIR, exist_ok=True)
-
-# Log file with date
-log_file_path = os.path.join(LOG_DIR, f"{datetime.now().strftime('%Y-%m-%d')}.log")
 
 log = logging.getLogger(LOG_NAME)
 log.setLevel(logging.INFO)
@@ -35,15 +38,15 @@ log.propagate = False
 if log.hasHandlers():
     log.handlers.clear()
 
-# File handler
-file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
-file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
-log.addHandler(file_handler)
 
-# Filter to exclude 'rt_event' logs from console
-class NoRTFilter(logging.Filter):
-    def filter(self, record):
-        return not record.getMessage().startswith('RT ')
+configure_rotating_logger(
+    log,
+    LOG_DIR,
+    "daemon-active.log",
+    when="M",
+    interval=1,
+    suffix_format="%y-%m-%d-%H-%M",
+)
 
 # Stream handler
 stream_handler = logging.StreamHandler()
@@ -86,14 +89,6 @@ except Exception:
 asr_funasr_model = None
 
 
-def rt_event(event: str, **fields):
-    payload = {"evt": event, "ts": datetime.utcnow().isoformat() + "Z", **fields}
-    try:
-        log.info("RT " + json.dumps(payload, ensure_ascii=False))
-    except Exception:
-        log.info(f"RT {{'evt':'{event}','error':'log_serialize_failed'}}")
-
-
 def load_funasr_model():
     global asr_funasr_model
     if asr_funasr_model is not None:
@@ -101,7 +96,7 @@ def load_funasr_model():
     try:
         os.environ.setdefault("USE_TORCH", "1")
         from funasr import AutoModel
-        rt_event("asr_model_loading_start", model=MODEL_NAME, rev=MODEL_REV, device=DEVICE)
+        log_event(log, "asr_model_loading_start", model=MODEL_NAME, rev=MODEL_REV, device=DEVICE)
         asr_funasr_model = AutoModel(
             model=MODEL_NAME,
             model_revision=MODEL_REV,
@@ -111,9 +106,9 @@ def load_funasr_model():
             punc_model_revision="v2.0.4",
             device=DEVICE,
         )
-        rt_event("asr_model_loaded", model=MODEL_NAME, device=DEVICE)
+        log_event(log, "asr_model_loaded", model=MODEL_NAME, device=DEVICE)
     except Exception as e:
-        rt_event("asr_model_load_failed", error=str(e))
+        log_event(log, "asr_model_load_failed", error=str(e))
         asr_funasr_model = None
     return asr_funasr_model
 
@@ -173,7 +168,7 @@ def _asr_generate_blocking(pcm_bytes: bytes) -> Optional[str]:
         if txt:
             return txt
     except Exception as e:
-        rt_event("asr_generate_error", error=str(e))
+        log_event(log, "asr_generate_error", error=str(e))
     return None
 
 
@@ -187,7 +182,7 @@ def main():
 
     load_funasr_model()
     if asr_funasr_model is None:
-        rt_event("fatal_model_unavailable")
+        log_event(log, "fatal_model_unavailable")
         raise SystemExit(2)
 
     ctx = zmq.Context.instance()
@@ -200,36 +195,38 @@ def main():
     try:
         pull_sock.bind(INPUT_ZMQ_ENDPOINT)
         pub_sock.connect(OUTPUT_ZMQ_ENDPOINT)
-        rt_event("daemon_bind_ok", pull=INPUT_ZMQ_ENDPOINT, pub=OUTPUT_ZMQ_ENDPOINT)
+        log_event(log, "daemon_bind_ok", pull=INPUT_ZMQ_ENDPOINT, pub=OUTPUT_ZMQ_ENDPOINT)
     except Exception as e:
-        rt_event("daemon_bind_error", error=str(e))
+        log_event(log, "daemon_bind_error", error=str(e))
         raise
 
-    # state minimal: (peer_ip, source) -> {chunks, bytes}
-    call_state: Dict[Tuple[str, str], Dict[str, int]] = {}
+    # state minimal: (peer_ip, source, unique_key, ssrc) -> {chunks, bytes}
+    call_state: Dict[Tuple[str, str, Optional[str], Optional[str]], Dict[str, int]] = {}
 
     try:
         while True:
             try:
                 meta_raw, pcm = pull_sock.recv_multipart()
             except Exception as e:
-                rt_event("pull_recv_error", error=str(e))
+                log_event(log, "pull_recv_error", error=str(e))
                 time.sleep(0.02)
                 continue
 
             try:
                 meta = json.loads(meta_raw.decode('utf-8'))
             except Exception as e:
-                rt_event("meta_decode_error", error=str(e))
+                log_event(log, "meta_decode_error", error=str(e))
                 continue
 
             peer_ip = meta.get('peer_ip', 'unknown')
             source = meta.get('source', 'unknown')
             start_ts = meta.get('start_ts')
             end_ts = meta.get('end_ts')
+            unique_key = meta.get('unique_key')
+            ssrc = meta.get('ssrc')
             is_finished = bool(meta.get('IsFinished', False))
 
-            key = (peer_ip, source)
+            key = (peer_ip, source, unique_key, ssrc)
             if key not in call_state:
                 call_state[key] = {"chunks": 0, "bytes": 0}
 
@@ -244,11 +241,13 @@ def main():
                         'text': txt,
                         'peer_ip': peer_ip,
                         'source': source,
+                        'unique_key': unique_key,
+                        'ssrc': ssrc,
                     }
                     try:
                         pub_sock.send_json(event, ensure_ascii=False)
                     except Exception as e:
-                        rt_event('pub_send_error', error=str(e))
+                        log_event(log, 'pub_send_error', error=str(e))
 
             if is_finished:
                 finish_evt = {
@@ -256,16 +255,18 @@ def main():
                     'text': '',
                     'peer_ip': peer_ip,
                     'source': source,
+                    'unique_key': unique_key,
+                    'ssrc': ssrc,
                 }
                 try:
                     pub_sock.send_json(finish_evt, ensure_ascii=False)
                 except Exception as e:
-                    rt_event('pub_send_error', error=str(e))
+                    log_event(log, 'pub_send_error', error=str(e))
                 st['chunks'] = 0
                 st['bytes'] = 0
 
     except KeyboardInterrupt:
-        rt_event("daemon_interrupt")
+        log_event(log, "daemon_interrupt")
     finally:
         try:
             pull_sock.close(0)
@@ -273,7 +274,7 @@ def main():
             ctx.term()
         except Exception:
             pass
-        rt_event("daemon_exit")
+        log_event(log, "daemon_exit")
 
 
 if __name__ == "__main__":
