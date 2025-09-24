@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+*/__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -9,6 +10,8 @@ __pycache__/
 .pytest_cache/
 .coverage
 .env
+.venv/
+*/.venv/
 venv/
 */venv/
 
@@ -48,6 +51,8 @@ Thumbs.db
 
 # Log files
 *.log
+backend-daemon/daemon_logs/
+websocket-server/main_logs/
 
 # Model cache directories - ignore downloaded models
 model_cache/
