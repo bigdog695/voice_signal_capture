@@ -46,6 +46,7 @@ configure_rotating_logger(
     when="H",
     interval=1,
     suffix_format="%y-%m-%d-%H",
+    align_to_period_start=True,
 )
 
 # Stream handler
