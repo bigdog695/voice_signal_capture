@@ -43,9 +43,9 @@ configure_rotating_logger(
     log,
     LOG_DIR,
     "daemon-active.log",
-    when="M",
+    when="H",
     interval=1,
-    suffix_format="%y-%m-%d-%H-%M",
+    suffix_format="%y-%m-%d-%H",
 )
 
 # Stream handler
