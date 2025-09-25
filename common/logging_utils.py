@@ -33,6 +33,7 @@ class AlignedTimedFileHandler(logging.Handler):
         interval: int = 1,
         encoding: str = "utf-8",
         utc: bool = False,
+        file_extension: str = "log",
     ) -> None:
         super().__init__()
         self.log_dir = log_dir
@@ -43,6 +44,7 @@ class AlignedTimedFileHandler(logging.Handler):
         self.interval = max(1, int(interval))
         self.encoding = encoding
         self.utc = utc
+        self.file_extension = file_extension.lstrip(".") or "log"
         self.stream: Optional[TextIO] = None
         self.current_period_start: Optional[datetime] = None
         self.next_rollover: Optional[datetime] = None
@@ -68,7 +70,7 @@ class AlignedTimedFileHandler(logging.Handler):
         day_dir = os.path.join(self.log_dir, period_start.strftime("%Y-%m-%d"))
         os.makedirs(day_dir, exist_ok=True)
         suffix = period_start.strftime(self.suffix_format)
-        return os.path.join(day_dir, f"{suffix}.log")
+        return os.path.join(day_dir, f"{suffix}.{self.file_extension}")
 
     def _open_stream(self, period_start: datetime) -> None:
         if self.stream:
@@ -124,7 +126,9 @@ class AlignedTimedFileHandler(logging.Handler):
             super().close()
 
 
-def _namer_factory(time_format: str):
+def _namer_factory(time_format: str, file_extension: str):
+    extension = file_extension.lstrip(".") or "log"
+
     def _namer(default_name: str) -> str:
         base_dir, filename = os.path.split(default_name)
         parts = filename.split(".")
@@ -135,7 +139,7 @@ def _namer_factory(time_format: str):
             return default_name
         day_folder = os.path.join(base_dir, dt.strftime("%Y-%m-%d"))
         os.makedirs(day_folder, exist_ok=True)
-        return os.path.join(day_folder, f"{suffix}.log")
+        return os.path.join(day_folder, f"{suffix}.{extension}")
 
     return _namer
 
@@ -154,6 +158,7 @@ def create_daily_rotating_handler(
     suffix_format: str = DEFAULT_SUFFIX_FORMAT,
     encoding: str = "utf-8",
     backup_count: int = 0,
+    file_extension: str = "log",
 ) -> logging.Handler:
     """Create a TimedRotatingFileHandler that stores rotated files under daily folders."""
 
@@ -167,7 +172,7 @@ def create_daily_rotating_handler(
         encoding=encoding,
     )
     handler.suffix = suffix_format
-    handler.namer = _namer_factory(suffix_format)
+    handler.namer = _namer_factory(suffix_format, file_extension)
     handler.rotator = _rotator
     return handler
 
@@ -185,6 +190,7 @@ def configure_rotating_logger(
     backup_count: int = 0,
     align_to_period_start: bool = False,
     use_utc: bool = False,
+    file_extension: str = "log",
 ) -> TimedRotatingFileHandler:
     """Attach a rotating file handler with daily folders to the given logger."""
 
@@ -199,6 +205,7 @@ def configure_rotating_logger(
             interval=interval,
             encoding=encoding,
             utc=use_utc,
+            file_extension=file_extension,
         )
     else:
         handler = create_daily_rotating_handler(
@@ -209,6 +216,7 @@ def configure_rotating_logger(
             suffix_format=suffix_format,
             encoding=encoding,
             backup_count=backup_count,
+            file_extension=file_extension,
         )
     handler.setFormatter(formatter)
     logger.addHandler(handler)

@@ -202,7 +202,7 @@ def main():
         raise
 
     # state minimal: (peer_ip, source, unique_key, ssrc) -> {chunks, bytes}
-    call_state: Dict[Tuple[str, str, Optional[str], Optional[str]], Dict[str, int]] = {}
+    call_state: Dict[Tuple[str, str, Optional[str], Optional[str]], Dict[str, object]] = {}
 
     try:
         while True:
@@ -229,7 +229,7 @@ def main():
 
             key = (peer_ip, source, unique_key, ssrc)
             if key not in call_state:
-                call_state[key] = {"chunks": 0, "bytes": 0}
+                call_state[key] = {"chunks": 0, "bytes": 0, "last_text": None}
 
             st = call_state[key]
             if pcm:
@@ -237,6 +237,7 @@ def main():
                 st["bytes"] += len(pcm)
                 txt = _asr_generate_blocking(pcm)
                 if txt:
+                    st["last_text"] = txt
                     event = {
                         'type': 'asr_update',
                         'text': txt,
@@ -245,6 +246,16 @@ def main():
                         'unique_key': unique_key,
                         'ssrc': ssrc,
                     }
+                    log_event(
+                        log,
+                        'asr_update_generated',
+                        text=event['text'],
+                        peer_ip=peer_ip,
+                        source=source,
+                        unique_key=unique_key,
+                        ssrc=ssrc,
+                        is_finished=is_finished,
+                    )
                     try:
                         pub_sock.send_json(event, ensure_ascii=False)
                     except Exception as e:
@@ -259,12 +270,22 @@ def main():
                     'unique_key': unique_key,
                     'ssrc': ssrc,
                 }
+                log_event(
+                    log,
+                    'call_finished_generated',
+                    peer_ip=peer_ip,
+                    source=source,
+                    unique_key=unique_key,
+                    ssrc=ssrc,
+                    is_finished=is_finished,
+                )
                 try:
                     pub_sock.send_json(finish_evt, ensure_ascii=False)
                 except Exception as e:
                     log_event(log, 'pub_send_error', error=str(e))
                 st['chunks'] = 0
                 st['bytes'] = 0
+                st['last_text'] = None
 
     except KeyboardInterrupt:
         log_event(log, "daemon_interrupt")

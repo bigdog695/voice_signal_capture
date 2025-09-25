@@ -35,11 +35,12 @@ if log.hasHandlers():
 configure_rotating_logger(
     log,
     LOG_DIR,
-    "ws-active.log",
+    "ws-active.txt",
     when="H",
     interval=1,
     suffix_format="%y-%m-%d-%H",
     align_to_period_start=True,
+    file_extension="txt",
 )
 
 stream_handler = logging.StreamHandler()
@@ -110,6 +111,7 @@ async def _zmq_consume_loop():
                     unique_key=evt.get('unique_key'),
                     ssrc=evt.get('ssrc'),
                     text=evt_text_preview,
+                    is_finished=evt.get('is_finished', False),
                 )
             except Exception:
                 pass
