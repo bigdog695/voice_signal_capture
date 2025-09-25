@@ -21,6 +21,9 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
     const role = source === 'citizen' ? 'citizen' : 'other';
     const uniqueKey = extras?.unique_key || extras?.uniqueKey || null;
     const isFinishedFlag = !!(extras && (extras.is_finished === true || extras.isFinished === true || type === 'call_finished'));
+    
+    console.log('[ListeningWS] appendBubble', { text, type, source, isFinishedFlag, extras });
+    
     let finishSequence = null;
     if (isFinishedFlag && (source === 'citizen' || source === 'hot-line')) {
       // 使用OR逻辑更新对应source的状态
@@ -31,8 +34,16 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
       const citizenFinished = finishStatesRef.current.get('citizen') || false;
       const hotlineFinished = finishStatesRef.current.get('hot-line') || false;
       
+      console.log('[ListeningWS] finish states', { 
+        source, 
+        citizenFinished, 
+        hotlineFinished, 
+        finishStates: Object.fromEntries(finishStatesRef.current) 
+      });
+      
       if (citizenFinished && hotlineFinished) {
         finishSequence = 2; // 表示双方都已完成
+        console.log('[ListeningWS] BOTH SOURCES FINISHED! Will clear bubbles soon');
       } else {
         finishSequence = 1; // 表示只有一方完成
       }
@@ -117,7 +128,18 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
           case 'pong': return;
           case 'server_heartbeat': return;
           case 'asr_update':
-            appendBubble(data.text, 'asr_update', data.source, data);
+            {
+              const bubble = appendBubble(data.text, 'asr_update', data.source, data);
+              // 检查是否双方都完成，如果是则清空聊天窗口
+              if (bubble && bubble.finishSequence >= 2) {
+                finishStatesRef.current.clear();
+                console.log('[ListeningWS] Both sources finished via asr_update, clearing bubbles');
+                // Schedule clear on next tick so the end marker is briefly visible / persisted
+                setTimeout(() => {
+                  clearBubbles();
+                }, 50);
+              }
+            }
             break;
           case 'asr_partial':
             appendBubble(data.text, 'asr_partial', data.source || 'mock', data);

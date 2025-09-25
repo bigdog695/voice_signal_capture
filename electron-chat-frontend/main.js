@@ -334,6 +334,13 @@ ipcMain.on('listening:event', (_ev, data) => {
     const source = incomingMeta.source || data.source || 'unknown';
     const finishedFlag = incomingMeta.isFinished === true || incomingMeta.is_finished === true || (incomingMeta.metadata && (incomingMeta.metadata.is_finished === true || incomingMeta.metadata.isFinished === true));
     
+    console.log('[main] listening:event', { 
+      type: data.type, 
+      source, 
+      finishedFlag, 
+      text: data.text?.substring(0, 50) 
+    });
+    
     if (finishedFlag && (source === 'citizen' || source === 'hot-line')) {
       // 使用OR逻辑更新对应source的状态
       const currentState = finishStates.get(source) || false;
@@ -343,7 +350,15 @@ ipcMain.on('listening:event', (_ev, data) => {
       const citizenFinished = finishStates.get('citizen') || false;
       const hotlineFinished = finishStates.get('hot-line') || false;
       
+      console.log('[main] finish states updated', { 
+        source, 
+        citizenFinished, 
+        hotlineFinished, 
+        finishStates: Object.fromEntries(finishStates) 
+      });
+      
       if (citizenFinished && hotlineFinished) {
+        console.log('[main] BOTH SOURCES FINISHED! Finalizing conversation');
         finalizeConversationIfNeeded('both_sources_finished');
         finishStates.clear();
       }
@@ -351,6 +366,7 @@ ipcMain.on('listening:event', (_ev, data) => {
     }
     
     if (data.type === 'call_finished') {
+      console.log('[main] call_finished event received');
       finalizeConversationIfNeeded('call_finished');
       finishStates.clear();
     }

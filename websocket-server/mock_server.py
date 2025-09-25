@@ -107,6 +107,48 @@ def _client_ip_from_ws(ws: WebSocket) -> str:
     return ip
 
 
+async def _send_finish_messages():
+    """发送 citizen 和 hot-line 各自的 is_finished = true 消息"""
+    if not LISTENING_CLIENTS:
+        return
+    
+    # 准备两个 source 的 finish 消息
+    sources = ['citizen', 'hot-line']
+    
+    for source in sources:
+        finish_evt_template = {
+            'type': 'asr_update',
+            'text': f'[{source} finished]',
+            'source': source,
+            'is_finished': True
+        }
+        
+        if EVENT_BROADCAST:
+            # 广播模式：发送给所有客户端
+            tasks: List[asyncio.Task] = []
+            for cid, ws in list(LISTENING_CLIENTS.items()):
+                peer_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
+                evt = {**finish_evt_template, 'peer_ip': peer_ip}
+                log_event(log, 'mock_finish_broadcast', client_id=cid, peer_ip=peer_ip, source=source)
+                tasks.append(asyncio.create_task(ws.send_text(json.dumps(evt, ensure_ascii=False))))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+        else:
+            # 单播模式：随机选择一个客户端
+            import random
+            cid, ws = random.choice(list(LISTENING_CLIENTS.items()))
+            peer_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
+            evt = {**finish_evt_template, 'peer_ip': peer_ip}
+            log_event(log, 'mock_finish_unicast', client_id=cid, peer_ip=peer_ip, source=source)
+            try:
+                await ws.send_text(json.dumps(evt, ensure_ascii=False))
+            except Exception as e:
+                log_event(log, 'mock_finish_unicast_error', client_id=cid, source=source, error=str(e))
+        
+        # 两个 source 之间稍微间隔一下
+        await asyncio.sleep(0.5)
+
+
 async def _mock_event_loop():
     """周期性构造模拟 ASR 事件并分发。"""
     idx = 0
@@ -155,36 +197,13 @@ async def _mock_event_loop():
                 cycle_count += 1
                 log_event(log, 'mock_cycle_complete', cycle_count=cycle_count, cycles_per_call=CYCLES_PER_CALL)
                 if cycle_count >= CYCLES_PER_CALL:
-                    finished_evt_template = {
-                        'type': 'call_finished',
-                        'text': '',
-                        'source': 'system'
-                    }
-                    if EVENT_BROADCAST:
-                        tasks_finish: List[asyncio.Task] = []
-                        for cid, ws in list(LISTENING_CLIENTS.items()):
-                            peer_ip = CLIENT_IP_MAPPING.get(cid, 'unknown')
-                            fevt = {**finished_evt_template, 'peer_ip': peer_ip}
-                            log_event(log, 'mock_call_finished_broadcast', client_id=cid, peer_ip=peer_ip, cycle=cycle_count)
-                            tasks_finish.append(asyncio.create_task(ws.send_text(json.dumps(fevt, ensure_ascii=False))))
-                        if tasks_finish:
-                            await asyncio.gather(*tasks_finish, return_exceptions=True)
-                    else:
-                        # 在单播模式选择一个客户端发送结束
-                        if LISTENING_CLIENTS:
-                            import random as _r
-                            cid2, ws2 = _r.choice(list(LISTENING_CLIENTS.items()))
-                            peer_ip2 = CLIENT_IP_MAPPING.get(cid2, 'unknown')
-                            fevt = {**finished_evt_template, 'peer_ip': peer_ip2}
-                            log_event(log, 'mock_call_finished_unicast', client_id=cid2, peer_ip=peer_ip2, cycle=cycle_count)
-                            try:
-                                await ws2.send_text(json.dumps(fevt, ensure_ascii=False))
-                            except Exception as e:
-                                log_event(log, 'mock_call_finished_unicast_error', client_id=cid2, error=str(e))
+                    # 发送两个 source 各自的 is_finished = true 消息
+                    await _send_finish_messages()
                     # reset for next call
                     cycle_count = 0
-                    # 可选：在结束后插入一个额外的间隔，模拟通话间歇
-                    await asyncio.sleep(max(0.5, EVENT_INTERVAL * 0.5))
+                    # 发完 is_finished 消息后等待 10 秒再开始下一轮
+                    log_event(log, 'mock_waiting_next_round', wait_seconds=10)
+                    await asyncio.sleep(10)
     except asyncio.CancelledError:
         log_event(log, 'mock_loop_cancel')
     finally:
