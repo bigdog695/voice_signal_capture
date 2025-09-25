@@ -245,6 +245,7 @@ def main():
                         'source': source,
                         'unique_key': unique_key,
                         'ssrc': ssrc,
+                        'is_finished': is_finished,
                     }
                     log_event(
                         log,
@@ -269,6 +270,7 @@ def main():
                     'source': source,
                     'unique_key': unique_key,
                     'ssrc': ssrc,
+                    'is_finished': True,
                 }
                 log_event(
                     log,
