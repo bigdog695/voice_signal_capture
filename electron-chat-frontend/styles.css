@@ -1749,6 +1749,83 @@ body {
     gap: 12px;
 }
 
+.history-mode .monitor-icon {
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
+}
+
+.history-mode .status-dot {
+    animation: none;
+}
+
+.history-mode .status-dot.connected {
+    background: #2563eb;
+    box-shadow: 0 0 8px rgba(37, 99, 235, 0.35);
+}
+
+.history-mode .history-subtitle {
+    font-size: 12px;
+    color: #9ca3af;
+}
+
+.history-mode .connection-badge {
+    align-items: flex-start;
+}
+
+.history-mode .connection-badge .badge-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    line-height: 1.3;
+}
+
+.history-mode .connection-badge .badge-text span {
+    font-size: 12px;
+    font-weight: 500;
+    color: #6b7280;
+}
+
+.conversation-summary {
+    display: flex;
+    gap: 16px;
+    margin-top: 12px;
+    font-size: 12px;
+    color: #6b7280;
+}
+
+.conversation-summary .meta-label {
+    font-weight: 600;
+    margin-right: 4px;
+    color: #4b5563;
+}
+
+.conversation-summary .meta-value {
+    font-weight: 500;
+}
+
+.conversation-divider {
+    align-self: center;
+    padding: 6px 12px;
+    background: rgba(148, 163, 184, 0.12);
+    color: #6b7280;
+    font-size: 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 12px auto;
+}
+
+.conversation-divider .divider-time {
+    font-size: 11px;
+    color: #9ca3af;
+}
+
+.history-messages-list {
+    padding-bottom: 32px;
+}
+
 .messages-container {
     flex: 1;
     position: relative;
