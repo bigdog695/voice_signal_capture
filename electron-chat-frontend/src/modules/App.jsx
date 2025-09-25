@@ -6,7 +6,7 @@ import { Layout } from './layout/Layout';
 export const App = () => {
   return (
     <ConfigProvider>
-      <ListeningProvider>
+      <ListeningProvider autoConnect>
         <Layout />
       </ListeningProvider>
     </ConfigProvider>

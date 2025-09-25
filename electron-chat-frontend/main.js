@@ -245,6 +245,54 @@ function ensureConversationsDir() {
   }
 }
 
+function getHistoryMetadata(filePath) {
+  let firstTimestamp = null;
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    for (const line of lines) {
+      if (!line) continue;
+      let evt;
+      try {
+        evt = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!firstTimestamp && (evt.time || evt.ts)) {
+        firstTimestamp = evt.time || evt.ts;
+        break; // 只需要第一个时间戳就够了
+      }
+    }
+  } catch (e) {
+    console.warn('[main] getHistoryMetadata failed', e && e.message);
+  }
+
+  let formattedTime = '';
+  if (firstTimestamp) {
+    try {
+      const date = new Date(firstTimestamp);
+      if (!Number.isNaN(date.getTime())) {
+        const parts = new Intl.DateTimeFormat('zh-CN', {
+          timeZone: 'Asia/Shanghai',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false
+        }).formatToParts(date);
+        const map = Object.fromEntries(parts.filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+        formattedTime = `${map.year || '0000'}-${map.month || '00'}-${map.day || '00'} ${map.hour || '00'}:${map.minute || '00'}:${map.second || '00'}`;
+      }
+    } catch (e) {
+      console.warn('[main] format timestamp failed', e && e.message);
+    }
+  }
+
+  return { formattedTime };
+}
+
 // Maintain current active conversation file handle metadata
 let activeConv = null; // { id, filePath, createdAt, lastEventTs }
 function startConversationIfNeeded(ts) {
@@ -276,12 +324,35 @@ function finalizeConversationIfNeeded(reason) {
   activeConv = null;
 }
 
+const finishStates = new Map(); // Map<'citizen' | 'hot-line', boolean>
+
 ipcMain.on('listening:event', (_ev, data) => {
-  // data = { type, text, role, source, time, peer_ip? }
+  // data = { type, text, role, source, time, uniqueKey?, isFinished?, finishSequence? }
   try {
     appendConversationEvent(data);
+    const incomingMeta = data && typeof data === 'object' ? data : {};
+    const source = incomingMeta.source || data.source || 'unknown';
+    const finishedFlag = incomingMeta.isFinished === true || incomingMeta.is_finished === true || (incomingMeta.metadata && (incomingMeta.metadata.is_finished === true || incomingMeta.metadata.isFinished === true));
+    
+    if (finishedFlag && (source === 'citizen' || source === 'hot-line')) {
+      // 使用OR逻辑更新对应source的状态
+      const currentState = finishStates.get(source) || false;
+      finishStates.set(source, currentState || finishedFlag);
+      
+      // 检查是否两个source都已finished
+      const citizenFinished = finishStates.get('citizen') || false;
+      const hotlineFinished = finishStates.get('hot-line') || false;
+      
+      if (citizenFinished && hotlineFinished) {
+        finalizeConversationIfNeeded('both_sources_finished');
+        finishStates.clear();
+      }
+      return;
+    }
+    
     if (data.type === 'call_finished') {
       finalizeConversationIfNeeded('call_finished');
+      finishStates.clear();
     }
   } catch (e) {
     console.warn('[main] listening:event handling failed', e && e.message);
@@ -293,7 +364,19 @@ ipcMain.handle('history:list', async () => {
   return files.sort().reverse().map(f => {
     const full = path.join(conversationsDir, f);
     const stat = fs.statSync(full);
-    return { id: f.replace(/\.ndjson$/, ''), file: f, mtime: stat.mtimeMs, size: stat.size };
+    const meta = getHistoryMetadata(full);
+    let displayName = f.replace(/\.ndjson$/, '');
+    if (meta.formattedTime) {
+      displayName = meta.formattedTime;
+    }
+    return {
+      id: f.replace(/\.ndjson$/, ''),
+      file: f,
+      mtime: stat.mtimeMs,
+      size: stat.size,
+      displayName,
+      formattedTime: meta.formattedTime || null
+    };
   });
 });
 ipcMain.handle('history:load', async (_e, id) => {
@@ -310,5 +393,7 @@ ipcMain.handle('history:load', async (_e, id) => {
 setInterval(() => {
   if (activeConv && Date.now() - activeConv.lastEventTs > 5 * 60 * 1000) {
     finalizeConversationIfNeeded('idle_timeout');
+    // Clean up finish states for the timed-out conversation
+    finishStates.clear();
   }
 }, 60 * 1000);

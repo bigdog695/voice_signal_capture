@@ -69,7 +69,7 @@ export const Sidebar = ({ onOpenSettings, onShowMonitor, onSelectHistory }) => {
                   console.warn('[Sidebar] load history failed', e && e.message);
                 }
               }}>
-                <div className="history-name">{item.id}</div>
+                <div className="history-name">{item.displayName || item.id}</div>
                 <div className="history-meta">{Math.round(item.size/1024)} KB</div>
               </li>
             ))}

@@ -56,12 +56,25 @@ SERVER_PORT = int(os.getenv("MOCK_SERVER_PORT", "18000"))
 HEARTBEAT_SEC = float(os.getenv("MOCK_HEARTBEAT_SEC", "1.0"))
 CLIENT_IDLE_TIMEOUT = float(os.getenv("MOCK_CLIENT_IDLE_TIMEOUT", "30"))
 CYCLES_PER_CALL = max(1, int(os.getenv("MOCK_CYCLES_PER_CALL", "1")))  # 防止 0 或负数
+MOCK_ALLOWED_ORIGINS_RAW = os.getenv("MOCK_ALLOWED_ORIGINS", "*")
+MOCK_ALLOWED_ORIGINS = [origin.strip() for origin in MOCK_ALLOWED_ORIGINS_RAW.split(",") if origin.strip()] or ["*"]
+MOCK_ALLOW_CREDENTIALS_RAW = os.getenv("MOCK_ALLOW_CREDENTIALS", "false")
+MOCK_ALLOW_CREDENTIALS = MOCK_ALLOW_CREDENTIALS_RAW.strip().lower() in {"1", "true", "yes", "on"}
 
 app = FastAPI(title="Voice Mock WS Server", version="1.0.0")
+allow_all_origins = any(origin == "*" for origin in MOCK_ALLOWED_ORIGINS)
+if allow_all_origins and MOCK_ALLOW_CREDENTIALS:
+    log_event(log, 'mock_cors_credentials_disabled', reason='wildcard_origin')
+    MOCK_ALLOW_CREDENTIALS = False
+
+cors_allow_origins = ["*"] if allow_all_origins else MOCK_ALLOWED_ORIGINS
+cors_allow_origin_regex = ".*" if allow_all_origins else None
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_allow_origins,
+    allow_origin_regex=cors_allow_origin_regex,
+    allow_credentials=MOCK_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

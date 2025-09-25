@@ -1,9 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Sidebar } from '../ui/Sidebar';
 import { SettingsModal } from '../ui/SettingsModal';
 import { MonitorView } from '../ui/MonitorView';
 import { ASRView } from '../ui/ASRView';
 import { CallDisplay } from '../ui/CallDisplay';
+import { useListening } from '../hooks/useListening';
 
 const parseTimestamp = (value) => {
   if (!value) return null;
@@ -197,6 +198,8 @@ export const Layout = () => {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selectedCall, setSelectedCall] = useState(null);
   const [historyData, setHistoryData] = useState(null);
+  const { lastAsrUpdate } = useListening();
+  const lastHandledUpdateRef = useRef(null);
 
   const handleSelectHistory = (data) => {
     if (data && !data.error) {
@@ -209,6 +212,17 @@ export const Layout = () => {
     setView('none');
     setHistoryData(null);
   };
+
+  useEffect(() => {
+    if (!lastAsrUpdate || !lastAsrUpdate.id) return;
+    if (view === 'monitor') {
+      lastHandledUpdateRef.current = lastAsrUpdate.id;
+      return;
+    }
+    if (lastHandledUpdateRef.current === lastAsrUpdate.id) return;
+    lastHandledUpdateRef.current = lastAsrUpdate.id;
+    setView('monitor');
+  }, [lastAsrUpdate, view]);
 
   return (
     <div className="app-container">

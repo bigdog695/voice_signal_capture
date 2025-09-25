@@ -51,7 +51,7 @@ log.addHandler(stream_handler)
 
 
 # --- Configuration ---
-ASR_EVENTS_ENDPOINT = os.getenv("ASR_EVENTS_ENDPOINT", "tcp://0.0.0.0:5556")
+ASR_EVENTS_ENDPOINT = os.getenv("ASR_EVENTS_ENDPOINT", "tcp://0.0.0.0:5557")
 WS_BROADCAST_ALL = os.getenv("WS_BROADCAST_ALL", "0").strip().lower() in {"1", "true", "yes", "on"}
 WS_ALLOWED_ORIGINS_RAW = os.getenv("WS_ALLOWED_ORIGINS", "*")
 WS_ALLOWED_ORIGINS = [origin.strip() for origin in WS_ALLOWED_ORIGINS_RAW.split(",") if origin.strip()] or ["*"]

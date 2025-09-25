@@ -3,41 +3,79 @@ import { useConfig } from '../config/ConfigContext';
 
 const ListeningContext = createContext(null);
 
-export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, children, maxBubbles = 50 }) => {
+export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, children, maxBubbles = 50 }) => {
   const { urls } = useConfig();
   const wsRef = useRef(null);
   const [status, setStatus] = useState('disconnected');
   const [bubbles, setBubbles] = useState([]);
+  const [lastAsrUpdate, setLastAsrUpdate] = useState(null);
   const reconnectAttemptsRef = useRef(0);
   const manualCloseRef = useRef(false);
   const heartbeatTimerRef = useRef(null);
   const connectTimerRef = useRef(null);
   const openedAtRef = useRef(null);
   const seqRef = useRef(0);
+  const finishStatesRef = useRef(new Map()); // Map<'citizen' | 'hot-line', boolean>
   // Simplified: directly append each incoming ASR message (partial or update) as a new bubble
-  const appendBubble = useCallback((text, type, source) => {
+  const appendBubble = useCallback((text, type, source, extras = {}) => {
     const role = source === 'citizen' ? 'citizen' : 'other';
+    const uniqueKey = extras?.unique_key || extras?.uniqueKey || null;
+    const isFinishedFlag = !!(extras && (extras.is_finished === true || extras.isFinished === true || type === 'call_finished'));
+    let finishSequence = null;
+    if (isFinishedFlag && (source === 'citizen' || source === 'hot-line')) {
+      // 使用OR逻辑更新对应source的状态
+      const currentState = finishStatesRef.current.get(source) || false;
+      finishStatesRef.current.set(source, currentState || isFinishedFlag);
+      
+      // 检查是否两个source都已finished
+      const citizenFinished = finishStatesRef.current.get('citizen') || false;
+      const hotlineFinished = finishStatesRef.current.get('hot-line') || false;
+      
+      if (citizenFinished && hotlineFinished) {
+        finishSequence = 2; // 表示双方都已完成
+      } else {
+        finishSequence = 1; // 表示只有一方完成
+      }
+    }
     const bubble = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
       text: text || '',
       type,
       source: source || 'asr',
       role,
-      time: new Date().toISOString()
+      time: new Date().toISOString(),
+      uniqueKey,
+      isFinished: isFinishedFlag,
+      finishSequence,
+      metadata: extras && typeof extras === 'object' ? extras : undefined
     };
     setBubbles(prev => {
       const next = [...prev, bubble];
       return next.length > maxBubbles ? next.slice(next.length - maxBubbles) : next;
     });
+    if (type === 'asr_update') {
+      const trimmed = bubble.text && typeof bubble.text === 'string' ? bubble.text.trim() : '';
+      if (trimmed) {
+        setLastAsrUpdate({
+          id: bubble.id,
+          text: trimmed,
+          role: bubble.role,
+          time: bubble.time,
+          uniqueKey: bubble.uniqueKey || null
+        });
+      }
+    }
     try {
       if (window && window.electronAPI && typeof window.electronAPI.send === 'function') {
         window.electronAPI.send('listening:event', bubble);
       }
     } catch(_) {}
+    return bubble;
   }, [maxBubbles]);
 
   const clearBubbles = useCallback(() => {
     setBubbles([]);
+    finishStatesRef.current.clear();
     console.info('[ListeningWS] bubbles cleared');
   }, []);
 
@@ -79,18 +117,23 @@ export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, child
           case 'pong': return;
           case 'server_heartbeat': return;
           case 'asr_update':
-            appendBubble(data.text, 'asr_update', data.source);
+            appendBubble(data.text, 'asr_update', data.source, data);
             break;
           case 'asr_partial':
-            appendBubble(data.text, 'asr_partial', data.source || 'mock');
+            appendBubble(data.text, 'asr_partial', data.source || 'mock', data);
             break;
           case 'call_finished':
-            // Append an end-of-call marker bubble then clear history for fresh next call
-            appendBubble('（结束）', 'call_finished', data.source || 'asr');
-            // Schedule clear on next tick so the end marker is briefly visible / persisted
-            setTimeout(() => {
-              clearBubbles();
-            }, 50);
+            // Append an end-of-call marker bubble then clear history when both sources finished
+            {
+              const bubble = appendBubble('（结束）', 'call_finished', data.source || 'asr', data);
+              if (bubble && bubble.finishSequence >= 2) {
+                finishStatesRef.current.clear();
+                // Schedule clear on next tick so the end marker is briefly visible / persisted
+                setTimeout(() => {
+                  clearBubbles();
+                }, 50);
+              }
+            }
             break;
           default: break;
         }
@@ -129,6 +172,12 @@ export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, child
   }, [cleanupSocket, stopHeartbeat]);
 
   useEffect(() => {
+    if (autoConnect) {
+      connect();
+    }
+  }, [autoConnect, connect]);
+
+  useEffect(() => {
     return () => { disconnect(); };
   }, [disconnect]);
 
@@ -138,7 +187,17 @@ export const ListeningProvider = ({ autoConnect = false, heartbeatSec = 1, child
       window.__LISTENING_CLEAR = clearBubbles;
     }
   }, [clearBubbles]);
-  const value = { status, bubbles, isListening: status === 'connected', startListening: connect, stopListening: disconnect, connect, disconnect, clearBubbles };
+  const value = {
+    status,
+    bubbles,
+    isListening: status === 'connected',
+    startListening: connect,
+    stopListening: disconnect,
+    connect,
+    disconnect,
+    clearBubbles,
+    lastAsrUpdate
+  };
   return <ListeningContext.Provider value={value}>{children}</ListeningContext.Provider>;
 };
 

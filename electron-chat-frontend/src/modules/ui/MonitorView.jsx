@@ -3,18 +3,12 @@ import { useListening } from '../hooks/useListening';
 import { useHealth } from '../hooks/useHealth';
 
 export const MonitorView = ({ onClose }) => {
-  const { bubbles, isListening, startListening, stopListening } = useListening();
+  const { bubbles, isListening } = useListening();
   const { ok: healthOk, checking: healthChecking } = useHealth({ intervalMs: 2000, successIntervalMs: 15000 });
   const messagesListRef = useRef(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [userHasScrolled, setUserHasScrolled] = useState(false);
   const lastScrollTime = useRef(0);
-
-  // Start connection when monitor opens, stop when closes
-  useEffect(() => {
-    startListening();
-    return () => stopListening();
-  }, [startListening, stopListening]);
 
   // 滚动监听，判断是否显示"滚动到底部"按钮
   useEffect(() => {
