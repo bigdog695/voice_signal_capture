@@ -48,6 +48,48 @@ stream_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(n
 stream_handler.addFilter(NoRTFilter())
 log.addHandler(stream_handler)
 # --- End Logging Setup ---
+
+
+# --- Configuration ---
+ASR_EVENTS_ENDPOINT = os.getenv("ASR_EVENTS_ENDPOINT", "tcp://0.0.0.0:5556")
+WS_BROADCAST_ALL = os.getenv("WS_BROADCAST_ALL", "0").strip().lower() in {"1", "true", "yes", "on"}
+WS_ALLOWED_ORIGINS_RAW = os.getenv("WS_ALLOWED_ORIGINS", "*")
+WS_ALLOWED_ORIGINS = [origin.strip() for origin in WS_ALLOWED_ORIGINS_RAW.split(",") if origin.strip()] or ["*"]
+
+
+# --- FastAPI App Setup ---
+app = FastAPI(title="Voice Listening WebSocket", version="1.0.0")
+
+allow_all_origins = any(origin == "*" for origin in WS_ALLOWED_ORIGINS)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if allow_all_origins else WS_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# --- Runtime State ---
+LISTENING_CLIENTS: Dict[str, WebSocket] = {}
+CLIENT_IP_MAPPING: Dict[str, Optional[str]] = {}
+ZMQ_TASK: Optional[asyncio.Task] = None
+
+
+def _client_ip_from_ws(websocket: WebSocket) -> str:
+    try:
+        headers = {k.lower(): v for k, v in websocket.headers.items()}
+        for header in ("x-forwarded-for", "x-real-ip", "x-client-ip"):
+            if header in headers and headers[header]:
+                return headers[header].split(",")[0].strip()
+    except Exception:
+        pass
+    client = getattr(websocket, "client", None)
+    if client and getattr(client, "host", None):
+        return client.host
+    return "unknown"
+
+
 async def _zmq_consume_loop():
     ctx = zmq.asyncio.Context.instance()
     sub = ctx.socket(zmq.SUB)
@@ -339,15 +381,24 @@ async def websocket_listening_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
+
     log.info("========================================")
     log.info("Voice WS Server - v1.0.0")
     log.info("========================================")
     log.info(f"ASR_EVENTS_ENDPOINT: {ASR_EVENTS_ENDPOINT}")
     log.info(f"WS_BROADCAST_ALL: {WS_BROADCAST_ALL}")
+
     # Allow overriding listen port (default 8000) so frontend config can match dynamically.
     PORT = int(os.getenv("WS_SERVER_PORT", "8000"))
+    RELOAD_ENABLED = os.getenv("UVICORN_RELOAD", "true").strip().lower() in {"1", "true", "yes", "on"}
+
     try:
-        log_event(log, 'server_starting', port=PORT, host='0.0.0.0')
+        log_event(log, 'server_starting', port=PORT, host='0.0.0.0', reload=RELOAD_ENABLED)
     except Exception:
         pass
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=True, log_level="info")
+
+    module_name = os.path.splitext(os.path.basename(__file__))[0]
+    if RELOAD_ENABLED:
+        uvicorn.run(f"{module_name}:app", host="0.0.0.0", port=PORT, reload=True, log_level="info")
+    else:
+        uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
