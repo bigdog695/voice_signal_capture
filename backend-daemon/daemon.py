@@ -139,6 +139,20 @@ def _extract_text(result) -> Optional[str]:
     return None
 
 
+def _load_allow_list(path: str) -> Optional[set]:
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            lines = [ln.strip() for ln in f.readlines()]
+        ips = {ln for ln in lines if ln}
+        if not ips:
+            return None
+        return ips
+    except Exception as e:
+        log_event(log, "allow_list_load_error", error=str(e))
+        return None
+
 def _asr_generate_blocking(pcm_bytes: bytes) -> Optional[str]:
     try:
         audio = np.frombuffer(pcm_bytes, dtype=np.int16)
@@ -180,6 +194,18 @@ def main():
     log.info(f"Input ZMQ:  {INPUT_ZMQ_ENDPOINT} (PULL bind)")
     log.info(f"Output ZMQ: {OUTPUT_ZMQ_ENDPOINT} (PUB bind)")
     log.info(f"Model: {MODEL_NAME} rev={MODEL_REV} device={DEVICE}")
+
+    # Load whitelist from a file named 'allow_list' under the current script directory.
+    allow_list_path = os.path.join(script_dir, 'allow_list')
+    allow_ips = _load_allow_list(allow_list_path)
+    if allow_ips is None:
+        log_event(log, "allow_list_mode", mode="allow_all")
+    else:
+        try:
+            sample = list(allow_ips)[:5]
+        except Exception:
+            sample = []
+        log_event(log, "allow_list_mode", mode="whitelist_active", count=len(allow_ips), sample=sample)
 
     load_funasr_model()
     if asr_funasr_model is None:
@@ -226,6 +252,11 @@ def main():
             unique_key = meta.get('unique_key')
             ssrc = meta.get('ssrc')
             is_finished = bool(meta.get('IsFinished', False))
+
+            # Whitelist filtering: if allow_list exists and is non-empty, only process whitelisted IPs
+            if allow_ips is not None and peer_ip not in allow_ips:
+                log_event(log, "ip_not_allowed", peer_ip=peer_ip, source=source, unique_key=unique_key, ssrc=ssrc)
+                continue
 
             key = (peer_ip, source, unique_key, ssrc)
             if key not in call_state:
