@@ -330,6 +330,11 @@ class SenderAudioRecovery:
         if not self.zmq_sock or not pcm_bytes:
             return
         
+        # 获取session的唯一标识
+        session_unique_id = None
+        if session_key and session_key in self.active_sessions:
+            session_unique_id = self.active_sessions[session_key].session_unique_id
+        
         # Metadata in agreed structure
         meta = {
             'peer_ip': peer_ip,
@@ -337,7 +342,7 @@ class SenderAudioRecovery:
             'start_ts': float(start_ts) if start_ts is not None else None,
             'end_ts': float(end_ts) if end_ts is not None else None,
             'IsFinished': bool(is_finished),
-            'unique_key': f"{session_key}_{uuid.uuid4()}" if session_key else None,
+            'unique_key': session_unique_id,  # 使用session级别的唯一标识
             'ssrc': ssrc
         }
         
@@ -560,6 +565,7 @@ class Session:
     def __init__(self, session_key, peer_ip, *, publisher=None, chunk_bytes=8000):
         self.session_key = session_key
         self.peer_ip = peer_ip
+        self.session_unique_id = f"{int(time.time() * 1000)}_{uuid.uuid4()}"  # 时间戳 + UUID
         self.streams = {}  # stream_id -> {'ssrc', 'direction', 'packets', 'codec', 'connection_info'}
         self.last_activity = time.time()  # Record last activity time
         
