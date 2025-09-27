@@ -13,6 +13,7 @@ import dpkt
 import zmq
 import threading
 import os
+import uuid
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -307,6 +308,7 @@ class SenderAudioRecovery:
     def finalize_session(self, session_key):
         """Finalize session and generate audio files"""
         if session_key not in self.active_sessions:
+            logger.info(f"Session {session_key} not found, skipping finalization")
             return
             
         session = self.active_sessions[session_key]
@@ -323,7 +325,7 @@ class SenderAudioRecovery:
         del self.active_sessions[session_key]
         logger.info(f"Session {session_key} cleaned up")
 
-    def _publish_zmq(self, peer_ip, source, pcm_bytes, start_ts, end_ts, is_finished):
+    def _publish_zmq(self, peer_ip, source, pcm_bytes, start_ts, end_ts, is_finished, session_key=None, ssrc=None):
         """Publish audio chunk to ZMQ"""
         if not self.zmq_sock or not pcm_bytes:
             return
@@ -334,7 +336,9 @@ class SenderAudioRecovery:
             'source': source,
             'start_ts': float(start_ts) if start_ts is not None else None,
             'end_ts': float(end_ts) if end_ts is not None else None,
-            'IsFinished': bool(is_finished)
+            'IsFinished': bool(is_finished),
+            'unique_key': f"{session_key}_{uuid.uuid4()}" if session_key else None,
+            'ssrc': ssrc
         }
         
         try:
@@ -571,6 +575,9 @@ class Session:
             'citizen': False,
             'hotline': False
         }
+        # SSRC storage per direction
+        self.ssrc_citizen = None
+        self.ssrc_hotline = None
         
     def add_stream(self, stream_id, ssrc, direction, src_ip, dst_ip, src_port, dst_port, codec):
         """Add stream to session"""
@@ -584,6 +591,11 @@ class Session:
             'src_port': src_port,
             'dst_port': dst_port
         }
+        # Store SSRC for the direction
+        if direction == 'citizen':
+            self.ssrc_citizen = ssrc
+        elif direction == 'hotline':
+            self.ssrc_hotline = ssrc
     
     def can_pair_with_connection(self, src_ip, dst_ip, src_port, dst_port, direction):
         """Check if can pair with given connection (bidirectional streams: IP and port swapped)"""
@@ -679,7 +691,7 @@ class Session:
             return
         # Direction mapping to required string
         source = 'citizen' if direction == 'citizen' else 'hot-line'
-        self.publisher(self.peer_ip, source, pcm_bytes, start_ts, end_ts, is_finished)
+        self.publisher(self.peer_ip, source, pcm_bytes, start_ts, end_ts, is_finished, self.session_key, self._get_ssrc_for_direction(direction))
         # Mark this direction has published data
         self.published_any[direction] = True
 
@@ -709,6 +721,14 @@ class Session:
     def get_all_stream_ids(self):
         """Get all stream IDs in session"""
         return list(self.streams.keys())
+
+    def _get_ssrc_for_direction(self, direction):
+        """Get the SSRC for a given direction from member variables."""
+        if direction == 'citizen':
+            return self.ssrc_citizen
+        elif direction == 'hotline':
+            return self.ssrc_hotline
+        return None
 
 
 def main():
