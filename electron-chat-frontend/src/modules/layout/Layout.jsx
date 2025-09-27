@@ -43,8 +43,15 @@ const formatDuration = (ms) => {
   return `${seconds}秒`;
 };
 
-const HistoryView = ({ data, onClose }) => {
+const HistoryView = ({ data, onClose, onRefresh }) => {
   const events = useMemo(() => (Array.isArray(data?.events) ? data.events : []), [data]);
+  const ticketInfo = useMemo(() => {
+    if (!events.length) return null;
+    const t = events.find(e => e && e.system === 'ticket' && e.ticket);
+    return t && t.ticket ? t.ticket : null;
+  }, [events]);
+  const hasEnd = useMemo(() => events.some(e => e && e.system === 'conversation_end'), [events]);
+  const hasTicketError = useMemo(() => events.some(e => e && e.system === 'ticket_error'), [events]);
 
   const conversationInfo = useMemo(() => {
     if (!events.length) {
@@ -94,6 +101,15 @@ const HistoryView = ({ data, onClose }) => {
         });
         return acc;
       }
+      if (event.system === 'ticket' && event.ticket) {
+        acc.push({
+          kind: 'ticket',
+          id: `ticket-${index}`,
+          ticket: event.ticket,
+          timestamp: formatDateTime(event.ts || event.time)
+        });
+        return acc;
+      }
       const text = typeof event.text === 'string' ? event.text.trim() : '';
       if (!text) return acc;
       const role = event.role === 'citizen' || event.source === 'citizen' ? 'citizen' : 'other';
@@ -123,7 +139,7 @@ const HistoryView = ({ data, onClose }) => {
             </svg>
           </div>
           <div className="header-info">
-            <h3 className="monitor-title">历史通话回放</h3>
+            <h3 className="monitor-title">{ticketInfo?.ticket_title || '历史通话回放'}</h3>
             <div className="history-subtitle">会话ID：{data?.id || '未知'}</div>
             <div className="connection-badge">
               <div className="status-dot connected"></div>
@@ -136,6 +152,26 @@ const HistoryView = ({ data, onClose }) => {
               <div><span className="meta-label">开始</span><span className="meta-value">{conversationInfo.start || '—'}</span></div>
               <div><span className="meta-label">结束</span><span className="meta-value">{conversationInfo.end || '—'}</span></div>
             </div>
+            {!ticketInfo && events.some(e => e && e.system === 'conversation_end') && !events.some(e => e && e.system === 'ticket_error') && (
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
+                <div style={{ maxWidth: 520, background: '#f3f4f6', color: '#374151', borderRadius: 8, padding: 16, textAlign: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" opacity="0.4" />
+                      <path d="M12 3a9 9 0 0 1 9 9" stroke="currentColor" strokeWidth="2"/>
+                    </svg>
+                    <span>正在生成工单…</span>
+                  </div>
+                </div>
+              </div>
+            )}
+            {events.some(e => e && e.system === 'ticket_error') && (
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
+                <div style={{ maxWidth: 520, background: '#fef2f2', color: '#b91c1c', borderRadius: 8, padding: 16, textAlign: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', border: '1px solid #fecaca' }}>
+                  工单生成失败，请稍后刷新重试
+                </div>
+              </div>
+            )}
           </div>
         </div>
         {onClose && (
@@ -148,8 +184,8 @@ const HistoryView = ({ data, onClose }) => {
         )}
       </div>
 
-      <div className="chat-container">
-        {hasError ? (
+          <div className="chat-container">
+            {hasError ? (
           <div className="empty-state">
             <h4>无法加载会话</h4>
             <p>请稍后重试或选择其他记录。</p>
@@ -167,6 +203,18 @@ const HistoryView = ({ data, onClose }) => {
                   <div key={item.id} className="conversation-divider" title={item.timestamp || undefined}>
                     <span>{item.label}</span>
                     {item.timestamp && <span className="divider-time">{item.timestamp}</span>}
+                  </div>
+                ) : item.kind === 'ticket' ? (
+                  <div key={item.id} style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
+                    <div style={{ maxWidth: 520, background: '#f1f5f9', color: '#111827', borderRadius: 8, padding: 16, textAlign: 'left', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+                      <div style={{ fontWeight: 600, marginBottom: 8 }}>工单信息</div>
+                      <div style={{ lineHeight: 1.6 }}>
+                        <div><span style={{ color: '#6b7280' }}>类型：</span>{item.ticket?.ticket_type || '-'}</div>
+                        <div><span style={{ color: '#6b7280' }}>区域：</span>{item.ticket?.ticket_zone || '-'}</div>
+                        <div><span style={{ color: '#6b7280' }}>标题：</span>{item.ticket?.ticket_title || '-'}</div>
+                        <div><span style={{ color: '#6b7280' }}>内容：</span>{item.ticket?.ticket_content || '-'}</div>
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   <div
@@ -186,6 +234,16 @@ const HistoryView = ({ data, onClose }) => {
                 )
               )}
             </div>
+            {onRefresh && (
+              <button className="close-button" onClick={onRefresh} title="刷新" style={{ marginTop: 8 }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M4 4v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  <path d="M20 20v-6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  <path d="M20 10a8 8 0 1 0-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/>
+                </svg>
+                刷新
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -231,7 +289,15 @@ export const Layout = () => {
         {view === 'monitor' && <MonitorView onClose={() => setView('none')} />}
         {view === 'asr' && <ASRView />}
         {view === 'call' && <CallDisplay call={selectedCall} />}
-        {view === 'history' && <HistoryView data={historyData} onClose={handleCloseHistory} />}
+        {view === 'history' && <HistoryView data={historyData} onClose={handleCloseHistory} onRefresh={async () => {
+          try {
+            if (!historyData?.id || !window.electronAPI?.invoke) return;
+            const fresh = await window.electronAPI.invoke('history:load', historyData.id);
+            setHistoryData(fresh);
+          } catch (e) {
+            console.warn('[HistoryView] refresh failed', e && e.message);
+          }
+        }} />}
         {view === 'none' && (
           <div style={{padding:40}}>
             <h2>Call Records Display</h2>

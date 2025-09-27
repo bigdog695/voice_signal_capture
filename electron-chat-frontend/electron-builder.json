@@ -9,7 +9,6 @@
   "files": [
     "main.js",
     "preload.js",
-    "renderer.js",
     "index.html",
     "styles.css",
     "websocket-server-example.js",

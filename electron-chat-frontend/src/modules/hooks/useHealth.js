@@ -8,7 +8,7 @@ import { useConfig } from '../config/ConfigContext';
 //  - After first success, keeps a slower heartbeat check (successIntervalMs) to detect regression
 //  - Exposes { ok, lastOkAt, lastError, checking }
 export function useHealth({ intervalMs = 2000, successIntervalMs = 15000 } = {}) {
-  const { urls } = useConfig();
+  const { urls, ready } = useConfig();
   const [ok, setOk] = useState(false);
   const [checking, setChecking] = useState(false);
   const [lastOkAt, setLastOkAt] = useState(null);
@@ -53,9 +53,10 @@ export function useHealth({ intervalMs = 2000, successIntervalMs = 15000 } = {})
   }, [urls, intervalMs, successIntervalMs, scheduleNext]);
 
   useEffect(() => {
+    if (!ready) return; // wait until config loaded
     runCheck();
     return () => clearTimer();
-  }, [runCheck]);
+  }, [runCheck, ready]);
 
   return { ok, checking, lastOkAt, lastError };
 }

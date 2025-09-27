@@ -4,7 +4,7 @@ import { useConfig } from '../config/ConfigContext';
 const ListeningContext = createContext(null);
 
 export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, children, maxBubbles = 50 }) => {
-  const { urls } = useConfig();
+  const { urls, ready } = useConfig();
   const wsRef = useRef(null);
   const [status, setStatus] = useState('disconnected');
   const [bubbles, setBubbles] = useState([]);
@@ -194,10 +194,11 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
   }, [cleanupSocket, stopHeartbeat]);
 
   useEffect(() => {
+    if (!ready) return; // Wait until config is loaded from main
     if (autoConnect) {
       connect();
     }
-  }, [autoConnect, connect]);
+  }, [autoConnect, connect, ready]);
 
   useEffect(() => {
     return () => { disconnect(); };

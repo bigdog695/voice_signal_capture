@@ -1,7 +1,8 @@
-import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
 
 const DEFAULT_CONFIG = {
-  backendHost: 'localhost:8000',
+  // No default backend to avoid masking config problems
+  backendHost: '',
   useHttps: false,
   devServerHost: 'localhost:5173',
   exampleServerHost: 'localhost:8080'
@@ -10,16 +11,44 @@ const DEFAULT_CONFIG = {
 const ConfigContext = createContext(null);
 
 export const ConfigProvider = ({ children }) => {
-  const [backendHost, setBackendHost] = useState(localStorage.getItem('backendHost') || DEFAULT_CONFIG.backendHost);
-  const [useHttps, setUseHttps] = useState(localStorage.getItem('useHttps') === 'true' || DEFAULT_CONFIG.useHttps);
-  const [devServerHost] = useState(localStorage.getItem('devServerHost') || DEFAULT_CONFIG.devServerHost);
-  const [exampleServerHost] = useState(localStorage.getItem('exampleServerHost') || DEFAULT_CONFIG.exampleServerHost);
+  const [backendHost, setBackendHost] = useState(DEFAULT_CONFIG.backendHost);
+  const [useHttps, setUseHttps] = useState(DEFAULT_CONFIG.useHttps);
+  const [devServerHost, setDevServerHost] = useState(DEFAULT_CONFIG.devServerHost);
+  const [exampleServerHost, setExampleServerHost] = useState(DEFAULT_CONFIG.exampleServerHost);
+  const [ready, setReady] = useState(false);
 
-  const saveConfig = useCallback((host, https) => {
+  // Load config from main process; if missing, stay not ready (no silent default)
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        if (window && window.electronAPI && typeof window.electronAPI.invoke === 'function') {
+          const cfg = await window.electronAPI.invoke('config:get');
+          if (cfg && mounted) {
+            setBackendHost(cfg.backendHost || '');
+            setUseHttps(!!cfg.useHttps);
+            setDevServerHost(cfg.devServerHost || DEFAULT_CONFIG.devServerHost);
+            setExampleServerHost(cfg.exampleServerHost || DEFAULT_CONFIG.exampleServerHost);
+            setReady(true);
+            return;
+          }
+        }
+      } catch {}
+      if (!mounted) return;
+      // Stay not ready; require user to set config via Settings
+    };
+    load();
+    return () => { mounted = false; };
+  }, []);
+
+  const saveConfig = useCallback(async (host, https) => {
     setBackendHost(host);
     setUseHttps(https);
-    localStorage.setItem('backendHost', host);
-    localStorage.setItem('useHttps', https.toString());
+    if (window && window.electronAPI && typeof window.electronAPI.invoke === 'function') {
+      await window.electronAPI.invoke('config:set', { backendHost: host, useHttps: !!https });
+    }
+    // After saving, consider config ready
+    setReady(!!host);
   }, []);
 
   const protocols = useMemo(() => ({
@@ -27,16 +56,27 @@ export const ConfigProvider = ({ children }) => {
     ws: useHttps ? 'wss' : 'ws'
   }), [useHttps]);
 
-  const urls = useMemo(() => ({
-    chat: (chatId='test_001') => `${protocols.ws}://${backendHost}/chatting?id=${chatId}`,
-    asr: () => `${protocols.ws}://${backendHost}/ws`,
-    listening: () => `${protocols.ws}://${backendHost}/listening`,
-    health: () => `${protocols.http}://${backendHost}/health`,
-    base: () => `${protocols.http}://${backendHost}`
-  }), [protocols, backendHost]);
+  const urls = useMemo(() => {
+    const host = (backendHost || '').replace(/^localhost(?=[:/]|$)/i, '127.0.0.1');
+    const make = (path) => {
+      if (!host) throw new Error('Backend host not configured');
+      return `${protocols.http}://${host}${path}`;
+    };
+    const makeWs = (path) => {
+      if (!host) throw new Error('Backend host not configured');
+      return `${protocols.ws}://${host}${path}`;
+    };
+    return {
+      chat: (chatId='test_001') => makeWs(`/chatting?id=${chatId}`),
+      asr: () => makeWs('/ws'),
+      listening: () => makeWs('/listening'),
+      health: () => make('/health'),
+      base: () => make('')
+    };
+  }, [protocols, backendHost]);
 
-  const value = { backendHost, useHttps, devServerHost, exampleServerHost, saveConfig, protocols, urls };
-  try { console.info('[Config] backendHost=', backendHost, 'listeningURL=', urls.listening()); } catch(_) {}
+  const value = { backendHost, useHttps, devServerHost, exampleServerHost, saveConfig, protocols, urls, ready };
+  try { if (ready) console.info('[Config] backendHost=', backendHost, 'listeningURL=', urls.listening()); } catch(_) {}
   return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;
 };
 

@@ -4,7 +4,8 @@ const path = require('path');
 
 // 默认配置
 const DEFAULT_CONFIG = {
-  backendHost: 'localhost:8000',
+  // Do not set a default backend to avoid masking misconfiguration.
+  backendHost: '',
   useHttps: false,
   devServerHost: 'localhost:5173',
   exampleServerHost: 'localhost:8080'
@@ -111,9 +112,12 @@ function saveUserConfig(configObject) {
 // 从环境变量、配置文件或默认值获取配置
 function getConfig() {
   const fileConfig = loadConfigFile();
+  // Respect user/app config for backend endpoint; do not let env override it unexpectedly
+  const backendHost = (fileConfig.backendHost || '').replace(/^localhost(?=[:/]|$)/i, '127.0.0.1');
   return {
-    backendHost: process.env.BACKEND_HOST || fileConfig.backendHost,
-    useHttps: (process.env.USE_HTTPS === 'true') || fileConfig.useHttps,
+    backendHost,
+    useHttps: !!fileConfig.useHttps,
+    // Allow env to override dev-only settings
     devServerHost: process.env.DEV_SERVER_HOST || fileConfig.devServerHost,
     exampleServerHost: process.env.EXAMPLE_SERVER_HOST || fileConfig.exampleServerHost
   };

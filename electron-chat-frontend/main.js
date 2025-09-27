@@ -1,6 +1,8 @@
 const { app, BrowserWindow, Menu, ipcMain } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+const https = require('https');
 
 // Ensure vendor React UMD assets exist (offline fallback) if missing.
 function ensureVendorReact() {
@@ -45,12 +47,16 @@ function ensureVendorReact() {
 // fall back to safe defaults to avoid crashing the main process.
 let getDevServerUrl;
 let getConfig;
+let ensureUserConfigExists;
+let saveUserConfig;
 let configModule = null;
 try {
   // Resolve relative to this file's directory to be robust when packaged into an asar
   configModule = require(path.join(__dirname, 'config'));
   getDevServerUrl = configModule.getDevServerUrl;
   getConfig = configModule.getConfig;
+  ensureUserConfigExists = configModule.ensureUserConfigExists;
+  saveUserConfig = configModule.saveUserConfig;
 } catch (err) {
   console.warn('Could not load ./config module, falling back to defaults:', err && err.message);
   const FALLBACK = {
@@ -61,6 +67,8 @@ try {
   };
   getConfig = () => FALLBACK;
   getDevServerUrl = () => `${getConfig().useHttps ? 'https' : 'http'}://${getConfig().devServerHost}`;
+  ensureUserConfigExists = async () => {};
+  saveUserConfig = () => {};
 }
 
 let mainWindow;
@@ -131,8 +139,8 @@ function createWindow() {
 // Ensure user-editable config exists before creating app UI
 app.whenReady().then(async () => {
   try {
-    if (configModule && typeof configModule.ensureUserConfigExists === 'function') {
-      await configModule.ensureUserConfigExists();
+    if (typeof ensureUserConfigExists === 'function') {
+      await ensureUserConfigExists();
     }
   } catch (err) {
     console.warn('ensureUserConfigExists failed:', err && err.message);
@@ -141,6 +149,30 @@ app.whenReady().then(async () => {
   ensureVendorReact();
   createWindow();
   createMenu();
+});
+
+// Config IPC to unify renderer and main
+ipcMain.handle('config:get', async () => {
+  try { return getConfig(); } catch { return null; }
+});
+ipcMain.handle('config:set', async (_e, partial) => {
+  try {
+    const curr = getConfig();
+    const p = Object.assign({}, partial || {});
+    if (typeof p.backendHost === 'string') {
+      p.backendHost = p.backendHost.replace(/^\s+|\s+$/g, '').replace(/^localhost(?=[:/]|$)/i, '127.0.0.1');
+    }
+    const next = Object.assign({}, curr, p);
+    if (typeof saveUserConfig === 'function') {
+      // Persist under default env for simplicity
+      const wrapper = { default: next, development: next, production: Object.assign({}, next, { useHttps: true }) };
+      saveUserConfig(wrapper);
+    }
+    return next;
+  } catch (e) {
+    console.warn('[main] config:set failed', e && e.message);
+    throw e;
+  }
 });
 
 // 当全部窗口关闭时退出应用 (macOS 除外)
@@ -293,6 +325,44 @@ function getHistoryMetadata(filePath) {
   return { formattedTime };
 }
 
+// Enhanced metadata that also extracts ticket title if present
+function getHistoryMetadata2(filePath) {
+  let firstTimestamp = null;
+  let ticketTitle = '';
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    for (const line of lines) {
+      if (!line) continue;
+      let evt;
+      try { evt = JSON.parse(line); } catch { continue; }
+      if (!ticketTitle && evt && evt.system === 'ticket' && evt.ticket && typeof evt.ticket.ticket_title === 'string') {
+        ticketTitle = evt.ticket.ticket_title;
+      }
+      if (!firstTimestamp && (evt.time || evt.ts)) {
+        firstTimestamp = evt.time || evt.ts;
+      }
+    }
+  } catch (e) {
+    console.warn('[main] getHistoryMetadata2 failed', e && e.message);
+  }
+  let formattedTime = '';
+  if (firstTimestamp) {
+    try {
+      const date = new Date(firstTimestamp);
+      if (!Number.isNaN(date.getTime())) {
+        const parts = new Intl.DateTimeFormat('zh-CN', {
+          timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+        }).formatToParts(date);
+        const map = Object.fromEntries(parts.filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+        formattedTime = `${map.year || '0000'}-${map.month || '00'}-${map.day || '00'} ${map.hour || '00'}:${map.minute || '00'}:${map.second || '00'}`;
+      }
+    } catch (e) { console.warn('[main] format timestamp failed', e && e.message); }
+  }
+  return { formattedTime, ticketTitle };
+}
+
 // Maintain current active conversation file handle metadata
 let activeConv = null; // { id, filePath, createdAt, lastEventTs }
 function startConversationIfNeeded(ts) {
@@ -315,13 +385,15 @@ function appendConversationEvent(evt) {
   }
 }
 function finalizeConversationIfNeeded(reason) {
-  if (!activeConv) return;
+  if (!activeConv) return null;
+  const finished = { ...activeConv };
   try {
     fs.appendFileSync(activeConv.filePath, JSON.stringify({ system: 'conversation_end', reason: reason || 'call_finished', ts: new Date().toISOString() }) + '\n', 'utf8');
   } catch (e) {
     console.warn('[main] finalizeConversationIfNeeded write failed', e && e.message);
   }
   activeConv = null;
+  return finished.filePath;
 }
 
 const finishStates = new Map(); // Map<'citizen' | 'hot-line', boolean>
@@ -359,7 +431,12 @@ ipcMain.on('listening:event', (_ev, data) => {
       
       if (citizenFinished && hotlineFinished) {
         console.log('[main] BOTH SOURCES FINISHED! Finalizing conversation');
-        finalizeConversationIfNeeded('both_sources_finished');
+        const filePath = finalizeConversationIfNeeded('both_sources_finished');
+        if (filePath) {
+          requestTicketForConversation(filePath).catch(err => {
+            console.warn('[main] ticket request failed', err && err.message);
+          });
+        }
         finishStates.clear();
       }
       return;
@@ -367,7 +444,12 @@ ipcMain.on('listening:event', (_ev, data) => {
     
     if (data.type === 'call_finished') {
       console.log('[main] call_finished event received');
-      finalizeConversationIfNeeded('call_finished');
+      const filePath = finalizeConversationIfNeeded('call_finished');
+      if (filePath) {
+        requestTicketForConversation(filePath).catch(err => {
+          console.warn('[main] ticket request failed', err && err.message);
+        });
+      }
       finishStates.clear();
     }
   } catch (e) {
@@ -380,18 +462,16 @@ ipcMain.handle('history:list', async () => {
   return files.sort().reverse().map(f => {
     const full = path.join(conversationsDir, f);
     const stat = fs.statSync(full);
-    const meta = getHistoryMetadata(full);
-    let displayName = f.replace(/\.ndjson$/, '');
-    if (meta.formattedTime) {
-      displayName = meta.formattedTime;
-    }
+    const meta = getHistoryMetadata2(full);
+    let displayName = meta.ticketTitle || meta.formattedTime || f.replace(/\.ndjson$/, '');
     return {
       id: f.replace(/\.ndjson$/, ''),
       file: f,
       mtime: stat.mtimeMs,
       size: stat.size,
       displayName,
-      formattedTime: meta.formattedTime || null
+      formattedTime: meta.formattedTime || null,
+      ticketTitle: meta.ticketTitle || null
     };
   });
 });
@@ -408,8 +488,123 @@ ipcMain.handle('history:load', async (_e, id) => {
 // Optional timeout to auto-finalize stale conversation (e.g., no events for 5 minutes)
 setInterval(() => {
   if (activeConv && Date.now() - activeConv.lastEventTs > 5 * 60 * 1000) {
-    finalizeConversationIfNeeded('idle_timeout');
+    const filePath = finalizeConversationIfNeeded('idle_timeout');
+    if (filePath) {
+      requestTicketForConversation(filePath).catch(err => console.warn('[main] ticket request failed', err && err.message));
+    }
     // Clean up finish states for the timed-out conversation
     finishStates.clear();
   }
 }, 60 * 1000);
+
+// ------- Ticket proxy integration (main process) -------
+function buildTicketRequestFromFile(filePath) {
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split(/\r?\n/).filter(Boolean);
+    const events = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    const id = path.basename(filePath).replace(/\.ndjson$/, '');
+    let unique_key = id;
+    for (const evt of events) {
+      if (evt && (evt.uniqueKey || (evt.metadata && evt.metadata.unique_key))) {
+        unique_key = evt.uniqueKey || (evt.metadata && evt.metadata.unique_key) || unique_key;
+        break;
+      }
+    }
+    const conversations = [];
+    for (const evt of events) {
+      if (!evt) continue;
+      const text = typeof evt.text === 'string' ? evt.text.trim() : '';
+      const src = evt.source;
+      if (!text) continue;
+      if (src === 'citizen' || src === 'hot-line') {
+        conversations.push({ source: src, text });
+      }
+    }
+    return { unique_key, conversations };
+  } catch (e) {
+    console.warn('[main] buildTicketRequestFromFile failed', e && e.message);
+    return null;
+  }
+}
+
+function postJson(url, data, { timeoutMs = 15000 } = {}) {
+  return new Promise((resolve, reject) => {
+    try {
+      const u = new URL(url);
+      const isHttps = u.protocol === 'https:';
+      const lib = isHttps ? https : http;
+      const payload = Buffer.from(JSON.stringify(data));
+      const req = lib.request({
+        hostname: u.hostname,
+        port: u.port || (isHttps ? 443 : 80),
+        path: u.pathname + (u.search || ''),
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Length': payload.length
+        }
+      }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+        res.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf8');
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            return reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0,200)}`));
+          }
+          try {
+            const json = JSON.parse(body);
+            resolve(json);
+          } catch (e) {
+            reject(new Error('Invalid JSON from ticket service'));
+          }
+        });
+      });
+      req.on('error', reject);
+      req.setTimeout(timeoutMs, () => {
+        try { req.destroy(new Error('Request timeout')); } catch(_){}
+      });
+      req.write(payload);
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function requestTicketForConversation(filePath) {
+  const payload = buildTicketRequestFromFile(filePath);
+  if (!payload || !Array.isArray(payload.conversations) || payload.conversations.length === 0) {
+    console.warn('[main] ticket payload empty, skipping');
+    return;
+  }
+  const cfg = getConfig();
+  if (!cfg || !cfg.backendHost) {
+    console.warn('[main] ticket request skipped: backend not configured');
+    return;
+  }
+  // Normalize localhost to 127.0.0.1 to avoid IPv6 ::1 issues
+  const hostNorm = (cfg.backendHost || '').replace(/^localhost(?=[:/]|$)/i, '127.0.0.1');
+  const protocol = cfg.useHttps ? 'https' : 'http';
+  const base = `${protocol}://${hostNorm}`;
+  const url = `${base}/ticketGeneration`;
+  console.log('[main] requesting ticketGeneration', { url, unique_key: payload.unique_key, items: payload.conversations.length, cfg });
+  try {
+    const resp = await postJson(url, payload, { timeoutMs: 20000 });
+    const ticketEvent = {
+      system: 'ticket',
+      ticket: resp,
+      ts: new Date().toISOString()
+    };
+    fs.appendFileSync(filePath, JSON.stringify(ticketEvent) + '\n', 'utf8');
+    console.log('[main] ticket appended to history');
+  } catch (e) {
+    console.warn('[main] ticket request error', e && e.message);
+    const errEvent = {
+      system: 'ticket_error',
+      error: String(e && e.message || e),
+      ts: new Date().toISOString()
+    };
+    try { fs.appendFileSync(filePath, JSON.stringify(errEvent) + '\n', 'utf8'); } catch(_){}
+  }
+}

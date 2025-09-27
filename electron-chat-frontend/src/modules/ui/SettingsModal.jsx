@@ -3,7 +3,7 @@ import { useConfig } from '../config/ConfigContext';
 import { useWhitelist } from '../hooks/useWhitelist';
 
 export const SettingsModal = ({ open, onClose }) => {
-  const { backendHost, useHttps, saveConfig, urls } = useConfig();
+  const { backendHost, useHttps, saveConfig, urls, ready } = useConfig();
   const { registerToWhitelist } = useWhitelist();
   const [host, setHost] = useState(backendHost);
   const [https, setHttps] = useState(useHttps);
@@ -15,6 +15,7 @@ export const SettingsModal = ({ open, onClose }) => {
   if(!open) return null;
 
   const testConnection = async () => {
+    if (!ready) { setTestResult('配置未加载'); return; }
     setTesting(true); 
     setTestResult('Testing connection...');
     
