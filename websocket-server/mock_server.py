@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Dict, Optional, Set, Tuple, List
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -298,6 +299,74 @@ async def websocket_listening_endpoint(websocket: WebSocket):
         LISTENING_CLIENTS.pop(client_id, None)
         CLIENT_IP_MAPPING.pop(client_id, None)
     log_event(log, 'client_disconnect', client_id=client_id, client_ip=client_ip, remaining=len(LISTENING_CLIENTS))
+
+
+# ---- Mock REST: ticketGeneration ----
+class TicketResponse(BaseModel):
+    ticket_type: str
+    ticket_zone: str
+    ticket_title: str
+    ticket_content: str
+
+
+@app.post("/ticketGeneration", response_model=TicketResponse)
+async def mock_ticket_generation(payload: Dict):
+    try:
+        conversations = payload.get("conversations") or []
+        texts = []
+        for item in conversations:
+            try:
+                t = str(item.get("text", "")).strip()
+                if t:
+                    texts.append(t)
+            except Exception:
+                continue
+        joined = "\n".join(texts)
+
+        ticket_type = "咨询"
+        zone = "xxx"
+        title = "咨询事项"
+        content = "咨询"
+
+        # very simple keyword heuristics for mock
+        if any(k in joined for k in ["噪音", "扰民", "夜间施工", "深夜喧哗", "声音大"]):
+            ticket_type = "投诉"
+            title = "噪音扰民处理"
+            content = "噪音扰民"
+        elif any(k in joined for k in ["停水", "自来水", "漏水", "水压", "用水"]):
+            ticket_type = "报修"
+            title = "用水相关问题"
+            content = "供水故障"
+        elif any(k in joined for k in ["停电", "电力", "电线", "电压", "供电"]):
+            ticket_type = "报修"
+            title = "电力相关问题"
+            content = "供电故障"
+        elif any(k in joined for k in ["道路", "交通", "拥堵", "违停", "红绿灯"]):
+            ticket_type = "投诉"
+            title = "道路交通问题"
+            content = "交通管理"
+
+        # Try to make a concise title based on last message
+        last = texts[-1] if texts else ""
+        if last and ticket_type == "咨询" and title == "咨询事项":
+            trimmed = last[:24] + ("…" if len(last) > 24 else "")
+            title = f"咨询{trimmed}"
+
+        return TicketResponse(
+            ticket_type=ticket_type,
+            ticket_zone=zone,
+            ticket_title=title,
+            ticket_content=content,
+        )
+    except Exception as e:
+        log_event(log, 'mock_ticket_error', error=str(e))
+        # Return a generic mock response even on parsing issues
+        return TicketResponse(
+            ticket_type="咨询",
+            ticket_zone="xxx",
+            ticket_title="咨询事项",
+            ticket_content="咨询",
+        )
 
 
 if __name__ == "__main__":

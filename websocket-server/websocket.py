@@ -14,6 +14,9 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.abspath(os.path.join(script_dir, ".."))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
+# Allow importing sibling modules (e.g., ws_ticket_routes.py)
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
 
 from common.logging_utils import NoRTFilter, configure_rotating_logger, log_event
 
@@ -328,6 +331,14 @@ async def health():
         'endpoint': ASR_EVENTS_ENDPOINT,
         'ts': datetime.utcnow().isoformat() + 'Z'
     }
+
+# --- Include routes (ticket generation moved out) ---
+try:
+    from ws_ticket_routes import router as ticket_router
+    app.include_router(ticket_router)
+    log_event(log, 'routes_loaded', module='ws_ticket_routes')
+except Exception as e:
+    log_event(log, 'routes_load_error', error=str(e))
 
 
 @app.websocket("/listening")

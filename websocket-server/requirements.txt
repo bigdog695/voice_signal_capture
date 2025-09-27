@@ -1,4 +1,4 @@
 fastapi
 uvicorn[standard]  # includes websockets, httptools, watchfiles etc.
 pyzmq
-
+httpx
