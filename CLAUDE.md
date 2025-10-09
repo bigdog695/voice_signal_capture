@@ -4,11 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Voice Signal Capture is a distributed voice recognition system with three main components:
+Voice Signal Capture is a distributed voice recognition system with four main components:
 
 1. **Backend Daemon** (`backend-daemon/`) - ASR daemon using FunASR that processes raw PCM audio chunks via ZMQ
 2. **WebSocket Server** (`websocket-server/`) - FastAPI server that bridges ZMQ events to WebSocket clients
 3. **Electron Frontend** (`electron-chat-frontend/`) - React-based Electron chat application
+4. **AI Ticket Generator** (`ai-generated-ticket/`) - FastAPI service that converts voice recognition text into standardized government hotline tickets using DeepSeek 14B model
 
 ## Architecture
 
@@ -71,6 +72,21 @@ npm run pack
 npm run build
 ```
 
+### AI Ticket Generator
+```bash
+cd ai-generated-ticket
+pip install -r requirements.txt
+
+# Start Ollama service with DeepSeek model
+ollama pull deepseek-r1:14b
+ollama serve
+
+# Start ticket service
+python app.py
+# or
+./start_service.sh
+```
+
 ## Environment Configuration
 
 ### Backend Daemon
@@ -82,6 +98,12 @@ npm run build
 ### WebSocket Server
 - `ASR_EVENTS_ENDPOINT` (default: `tcp://127.0.0.1:5557`)
 - `WS_BROADCAST_ALL` (default: `0`) - Set to `1` for broadcast mode
+
+### AI Ticket Generator
+- `DEEPSEEK_API_URL` (default: `http://127.0.0.1:11434/api/generate`)
+- Service port: `8001`
+- Max retries: `2`
+- Request timeout: `60` seconds
 
 ## Key Implementation Details
 
@@ -101,9 +123,17 @@ npm run build
 - Processes 8kHz PCM audio by default
 - Energy gate filtering available via `ASR_ENERGY_GATE` environment variable
 
+### AI Ticket Processing
+- Uses DeepSeek 14B model via Ollama for intelligent text summarization
+- Supports 12345 citizen hotline standard ticket types (咨询|求助|投诉|举报|建议|其他)
+- Intelligent JSON extraction handles model responses with thinking tags
+- Automatic retry mechanism for parsing failures
+
 ## Testing and Validation
 
 The WebSocket server includes a health endpoint at `/health` for connectivity testing. The frontend provides connection testing in the settings panel.
+
+The AI ticket generator provides comprehensive test scripts and health endpoints at `/health` and `/` for service validation.
 
 ## Build Dependencies
 
