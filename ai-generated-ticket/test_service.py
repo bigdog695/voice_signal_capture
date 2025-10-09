@@ -11,7 +11,7 @@ import time
 from typing import Dict, Any
 
 # 测试配置
-BASE_URL = "http://localhost:8001"
+BASE_URL = "http://100.120.241.10:8001"
 SUMMARIZE_URL = f"{BASE_URL}/summarize"
 HEALTH_URL = f"{BASE_URL}/health"
 
