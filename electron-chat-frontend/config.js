@@ -4,8 +4,7 @@ const path = require('path');
 
 // 默认配置
 const DEFAULT_CONFIG = {
-  // Do not set a default backend to avoid masking misconfiguration.
-  backendHost: '',
+  backendHost: '192.168.0.201:8000',
   useHttps: false,
   devServerHost: 'localhost:5173',
   exampleServerHost: 'localhost:8080'
@@ -113,7 +112,7 @@ function saveUserConfig(configObject) {
 function getConfig() {
   const fileConfig = loadConfigFile();
   // Respect user/app config for backend endpoint; do not let env override it unexpectedly
-  const backendHost = (fileConfig.backendHost || '').replace(/^localhost(?=[:/]|$)/i, '127.0.0.1');
+  const backendHost = (fileConfig.backendHost || '').replace(/^localhost(?=[:/]|$)/i, '192.168.0.201');
   return {
     backendHost,
     useHttps: !!fileConfig.useHttps,

@@ -1,8 +1,8 @@
 {
   "appId": "com.aichat.frontend",
-  "productName": "AI Chat",
+  "productName": "12345智能助手",
   "artifactName": "${productName}-${version}-${arch}.${ext}",
-  "copyright": "Copyright © 2025 AI Chat",
+  "copyright": "Copyright © 2025 12345智能助手",
   "directories": {
     "output": "release"
   },
@@ -20,21 +20,27 @@
     {
       "from": "assets",
       "to": "assets",
-      "filter": ["**/*"]
+      "filter": [
+        "**/*"
+      ]
     }
   ],
   "win": {
     "target": [
       {
         "target": "nsis",
-        "arch": ["x64"]
+        "arch": [
+          "x64"
+        ]
       },
       {
         "target": "portable",
-        "arch": ["x64"]
+        "arch": [
+          "x64"
+        ]
       }
     ],
-    "publisherName": "AI Chat",
+    "publisherName": "12345智能助手",
     "verifyUpdateCodeSignature": false,
     "requestedExecutionLevel": "asInvoker"
   },
@@ -44,7 +50,7 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "AI Chat",
+    "shortcutName": "12345智能助手",
     "artifactName": "${productName}-Setup-${version}.${ext}"
   },
   "portable": {
@@ -54,7 +60,10 @@
     "target": [
       {
         "target": "dmg",
-        "arch": ["x64", "arm64"]
+        "arch": [
+          "x64",
+          "arm64"
+        ]
       }
     ],
     "icon": "assets/icon.icns",
@@ -79,21 +88,27 @@
     "target": [
       {
         "target": "AppImage",
-        "arch": ["x64"]
+        "arch": [
+          "x64"
+        ]
       },
       {
         "target": "deb",
-        "arch": ["x64"]
+        "arch": [
+          "x64"
+        ]
       },
       {
         "target": "rpm",
-        "arch": ["x64"]
+        "arch": [
+          "x64"
+        ]
       }
     ],
     "icon": "assets/icon.png",
     "category": "Office",
-    "synopsis": "AI Chat Application",
-    "description": "A modern AI chat application built with Electron"
+    "synopsis": "12345智能助手 Application",
+    "description": "A modern 12345智能助手 application built with Electron"
   },
   "appImage": {
     "artifactName": "${productName}-${version}.${ext}"

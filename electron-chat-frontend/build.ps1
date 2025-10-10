@@ -1,11 +1,11 @@
-# AI Chat - 构建安装包 PowerShell脚本
+﻿# 12345智能助手 - 构建安装包 PowerShell脚本
 
 param(
     [string]$BuildType = "ask"
 )
 
 Write-Host "================================" -ForegroundColor Cyan
-Write-Host "    AI Chat - 构建安装包" -ForegroundColor Cyan
+Write-Host "    12345智能助手 - 构建安装包" -ForegroundColor Cyan
 Write-Host "================================" -ForegroundColor Cyan
 Write-Host ""
 

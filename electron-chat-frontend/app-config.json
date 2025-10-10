@@ -1,16 +1,16 @@
 {
   "default": {
-    "backendHost": "127.0.0.1:18000",
+    "backendHost": "192.168.0.201:8000",
     "useHttps": false,
     "devServerHost": "localhost:5173",
     "exampleServerHost": "localhost:8080"
   },
   "development": {
-    "backendHost": "127.0.0.1:18000",
+    "backendHost": "192.168.0.201:8000",
     "useHttps": false
   },
   "production": {
-    "backendHost": "127.0.0.1:18000",
+    "backendHost": "192.168.0.201:8000",
     "useHttps": true
   }
 }

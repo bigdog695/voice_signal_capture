@@ -1,6 +1,6 @@
-@echo off
+﻿@echo off
 echo ================================
-echo    AI Chat Frontend Setup
+echo    12345智能助手 Frontend Setup
 echo ================================
 echo.
 

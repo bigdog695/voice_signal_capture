@@ -45,7 +45,7 @@
   },
   "build": {
     "appId": "com.example.chat-frontend",
-    "productName": "AI Chat",
+    "productName": "12345智能助手",
     "directories": {
       "output": "dist"
     },

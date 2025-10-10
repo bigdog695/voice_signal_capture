@@ -1,6 +1,6 @@
-# 构建安装包指南
+﻿# 构建安装包指南
 
-本文档说明如何使用构建脚本为AI Chat应用创建安装包。
+本文档说明如何使用构建脚本为12345智能助手应用创建安装包。
 
 ## 🚀 快速开始
 
@@ -40,12 +40,12 @@ npm run build:win
 ## 📦 构建选项
 
 ### 1. 便携版 (Portable)
-- 文件名: `AI Chat-Portable-1.0.0.exe`
+- 文件名: `12345智能助手-Portable-1.0.0.exe`
 - 特点: 无需安装，直接运行
 - 适合: 临时使用或不想安装的用户
 
 ### 2. 安装包 (NSIS Installer)
-- 文件名: `AI Chat-Setup-1.0.0.exe`
+- 文件名: `12345智能助手-Setup-1.0.0.exe`
 - 特点: 标准Windows安装程序
 - 功能: 
   - 自定义安装路径
@@ -96,10 +96,10 @@ npm run build:win
 
 ```
 dist/
-├── AI Chat-Setup-1.0.0.exe     # Windows安装包
-├── AI Chat-Portable-1.0.0.exe  # Windows便携版
-├── AI Chat-1.0.0.dmg           # macOS安装包 (如果构建Mac版本)
-└── AI Chat-1.0.0.AppImage      # Linux安装包 (如果构建Linux版本)
+├── 12345智能助手-Setup-1.0.0.exe     # Windows安装包
+├── 12345智能助手-Portable-1.0.0.exe  # Windows便携版
+├── 12345智能助手-1.0.0.dmg           # macOS安装包 (如果构建Mac版本)
+└── 12345智能助手-1.0.0.AppImage      # Linux安装包 (如果构建Linux版本)
 ```
 
 ## 🛠 故障排除

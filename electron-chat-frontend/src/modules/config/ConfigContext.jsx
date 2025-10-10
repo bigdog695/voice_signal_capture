@@ -57,7 +57,7 @@ export const ConfigProvider = ({ children }) => {
   }), [useHttps]);
 
   const urls = useMemo(() => {
-    const host = (backendHost || '').replace(/^localhost(?=[:/]|$)/i, '127.0.0.1');
+    const host = (backendHost || '').replace(/^localhost(?=[:/]|$)/i, '192.168.0.201');
     const make = (path) => {
       if (!host) throw new Error('Backend host not configured');
       return `${protocols.http}://${host}${path}`;

@@ -292,6 +292,10 @@ export const Layout = () => {
         {view === 'history' && <HistoryView data={historyData} onClose={handleCloseHistory} onRefresh={async () => {
           try {
             if (!historyData?.id || !window.electronAPI?.invoke) return;
+            const regen = await window.electronAPI.invoke('history:regenerateTicket', historyData.id);
+            if (!regen?.ok) {
+              console.warn('[HistoryView] regenerate ticket failed', regen?.error || 'unknown error');
+            }
             const fresh = await window.electronAPI.invoke('history:load', historyData.id);
             setHistoryData(fresh);
           } catch (e) {

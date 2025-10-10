@@ -1,4 +1,4 @@
-# AI Chat Frontend
+﻿# 12345智能助手 Frontend
 
 这是一个基于Electron的AI聊天前端应用，可以通过WebSocket与后端AI服务进行实时通信。
 

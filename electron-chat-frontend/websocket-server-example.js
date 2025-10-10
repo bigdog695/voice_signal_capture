@@ -7,7 +7,7 @@ try {
 } catch (err) {
   console.warn('Could not load ./config module for websocket example, using defaults:', err && err.message);
   config = {
-    backendHost: 'localhost:8000',
+    backendHost: '192.168.0.201:8000',
     useHttps: false,
     devServerHost: 'localhost:5173',
     exampleServerHost: 'localhost:8080'

@@ -1,8 +1,20 @@
-const { app, BrowserWindow, Menu, ipcMain } = require('electron');
+﻿const { app, BrowserWindow, Menu, ipcMain } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+
+const APP_DISPLAY_NAME = '12345智能助手';
+const APP_VERSION = (typeof app.getVersion === 'function' && app.getVersion()) || require('./package.json').version;
+const WINDOW_TITLE = `${APP_DISPLAY_NAME} - ${APP_VERSION}`;
+
+try {
+  if (typeof app.setName === 'function') {
+    app.setName(APP_DISPLAY_NAME);
+  } else {
+    app.name = APP_DISPLAY_NAME;
+  }
+} catch (_) {}
 
 // Ensure vendor React UMD assets exist (offline fallback) if missing.
 function ensureVendorReact() {
@@ -60,7 +72,7 @@ try {
 } catch (err) {
   console.warn('Could not load ./config module, falling back to defaults:', err && err.message);
   const FALLBACK = {
-    backendHost: 'localhost:8000',
+    backendHost: '192.168.0.201:8000',
     useHttps: false,
     devServerHost: 'localhost:5173',
     exampleServerHost: 'localhost:8080'
@@ -87,7 +99,7 @@ function createWindow() {
       sandbox: false
     },
     titleBarStyle: 'default',
-    title: 'AI Chat - Copilot',
+    title: WINDOW_TITLE,
     icon: path.join(__dirname, 'assets/icon.png'), // 可选：应用图标
     show: false, // 先不显示，等准备好后再显示
     backgroundColor: '#f8fafc', // 设置背景色与应用一致
@@ -160,7 +172,7 @@ ipcMain.handle('config:set', async (_e, partial) => {
     const curr = getConfig();
     const p = Object.assign({}, partial || {});
     if (typeof p.backendHost === 'string') {
-      p.backendHost = p.backendHost.replace(/^\s+|\s+$/g, '').replace(/^localhost(?=[:/]|$)/i, '127.0.0.1');
+      p.backendHost = p.backendHost.replace(/^\s+|\s+$/g, '').replace(/^localhost(?=[:/]|$)/i, '192.168.0.201');
     }
     const next = Object.assign({}, curr, p);
     if (typeof saveUserConfig === 'function') {
@@ -485,6 +497,23 @@ ipcMain.handle('history:load', async (_e, id) => {
   return { id, events: lines };
 });
 
+ipcMain.handle('history:regenerateTicket', async (_e, id) => {
+  ensureConversationsDir();
+  if (!id) return { ok: false, error: 'invalid_id' };
+  const filePath = path.join(conversationsDir, id + '.ndjson');
+  if (!fs.existsSync(filePath)) {
+    return { ok: false, error: 'not_found' };
+  }
+  try {
+    console.log('[main] history:regenerateTicket invoked', { id });
+    const ok = await requestTicketForConversation(filePath);
+    return ok ? { ok: true } : { ok: false, error: 'ticket_request_failed' };
+  } catch (err) {
+    console.warn('[main] history:regenerateTicket failed', err && err.message);
+    return { ok: false, error: String(err && err.message || err) };
+  }
+});
+
 // Optional timeout to auto-finalize stale conversation (e.g., no events for 5 minutes)
 setInterval(() => {
   if (activeConv && Date.now() - activeConv.lastEventTs > 5 * 60 * 1000) {
@@ -521,7 +550,7 @@ function buildTicketRequestFromFile(filePath) {
         conversations.push({ source: src, text });
       }
     }
-    return { unique_key, conversations };
+    return { unique_key, conversation: conversations, conversations };
   } catch (e) {
     console.warn('[main] buildTicketRequestFromFile failed', e && e.message);
     return null;
@@ -576,18 +605,19 @@ async function requestTicketForConversation(filePath) {
   const payload = buildTicketRequestFromFile(filePath);
   if (!payload || !Array.isArray(payload.conversations) || payload.conversations.length === 0) {
     console.warn('[main] ticket payload empty, skipping');
-    return;
+    return false;
   }
   const cfg = getConfig();
   if (!cfg || !cfg.backendHost) {
     console.warn('[main] ticket request skipped: backend not configured');
-    return;
+    return false;
   }
-  // Normalize localhost to 127.0.0.1 to avoid IPv6 ::1 issues
-  const hostNorm = (cfg.backendHost || '').replace(/^localhost(?=[:/]|$)/i, '127.0.0.1');
+  // Normalize localhost to 192.168.0.201 to avoid IPv6 ::1 issues
+  const hostNorm = (cfg.backendHost || '').replace(/^localhost(?=[:/]|$)/i, '192.168.0.201');
   const protocol = cfg.useHttps ? 'https' : 'http';
   const base = `${protocol}://${hostNorm}`;
   const url = `${base}/ticketGeneration`;
+  console.log('[main] ticket payload body', JSON.stringify(payload, null, 2));
   console.log('[main] requesting ticketGeneration', { url, unique_key: payload.unique_key, items: payload.conversations.length, cfg });
   try {
     const resp = await postJson(url, payload, { timeoutMs: 20000 });
@@ -598,6 +628,7 @@ async function requestTicketForConversation(filePath) {
     };
     fs.appendFileSync(filePath, JSON.stringify(ticketEvent) + '\n', 'utf8');
     console.log('[main] ticket appended to history');
+    return true;
   } catch (e) {
     console.warn('[main] ticket request error', e && e.message);
     const errEvent = {
@@ -606,5 +637,6 @@ async function requestTicketForConversation(filePath) {
       ts: new Date().toISOString()
     };
     try { fs.appendFileSync(filePath, JSON.stringify(errEvent) + '\n', 'utf8'); } catch(_){}
+    return false;
   }
 }

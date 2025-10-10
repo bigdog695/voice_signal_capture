@@ -1,10 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { useHealth } from '../hooks/useHealth';
 
 export const Sidebar = ({ onOpenSettings, onShowMonitor, onSelectHistory }) => {
-  const { ok: healthOk, checking } = useHealth({ intervalMs: 2000, successIntervalMs: 15000 });
-  const statusClass = healthOk ? 'connected' : 'disconnected';
-  const statusText = healthOk ? '服务可用' : (checking ? '检测中...' : '未连接');
   const [history, setHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
@@ -77,15 +73,6 @@ export const Sidebar = ({ onOpenSettings, onShowMonitor, onSelectHistory }) => {
         )}
       </div>
       <div className="sidebar-footer-modern">
-        <div className="connection-status-modern">
-          <div className={`status-indicator-modern ${statusClass}`}>
-            <div className="status-dot-modern"></div>
-          </div>
-          <div className="status-info">
-            <span className="status-label">连接状态</span>
-            <span className="status-text">{statusText}</span>
-          </div>
-        </div>
         <div className="action-buttons">
           <button className="primary-action-btn" onClick={onShowMonitor}>
             <div className="btn-icon">

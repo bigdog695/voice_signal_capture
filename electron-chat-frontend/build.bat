@@ -1,10 +1,10 @@
-necho 完成。
+﻿necho 完成。
 @echo off
-REM Windows build wrapper for AI Chat - calls PowerShell build script (pwsh or powershell)
+REM Windows build wrapper for 12345智能助手 - calls PowerShell build script (pwsh or powershell)
 setlocal enabledelayedexpansion
 
 echo =====================================
-echo   AI Chat - Windows 构建包装脚本
+echo   12345智能助手 - Windows 构建包装脚本
 echo =====================================
 
 :: Resolve script directory (handles spaces)

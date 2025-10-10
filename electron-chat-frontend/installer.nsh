@@ -1,4 +1,4 @@
-; NSIS安装程序自定义脚本
+﻿; NSIS安装程序自定义脚本
 
 !macro preInit
   ; 检查是否已经有实例在运行
@@ -11,33 +11,33 @@
 
 !macro customInstall
   ; 创建开始菜单文件夹
-  CreateDirectory "$SMPROGRAMS\AI Chat"
+  CreateDirectory "$SMPROGRAMS\12345智能助手"
   
   ; 创建桌面快捷方式
-  CreateShortCut "$DESKTOP\AI Chat.lnk" "$INSTDIR\AI Chat.exe"
+  CreateShortCut "$DESKTOP\12345智能助手.lnk" "$INSTDIR\12345智能助手.exe"
   
   ; 写入注册表信息
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Chat" "DisplayName" "AI Chat"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Chat" "UninstallString" "$INSTDIR\Uninstall AI Chat.exe"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Chat" "DisplayIcon" "$INSTDIR\AI Chat.exe"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Chat" "Publisher" "AI Chat Team"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Chat" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\12345智能助手" "DisplayName" "12345智能助手"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\12345智能助手" "UninstallString" "$INSTDIR\Uninstall 12345智能助手.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\12345智能助手" "DisplayIcon" "$INSTDIR\12345智能助手.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\12345智能助手" "Publisher" "12345智能助手 Team"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\12345智能助手" "DisplayVersion" "${VERSION}"
   
   ; 关联文件类型（可选）
   ; WriteRegStr HKCR ".chat" "" "AI.Chat.File"
-  ; WriteRegStr HKCR "AI.Chat.File" "" "AI Chat File"
-  ; WriteRegStr HKCR "AI.Chat.File\DefaultIcon" "" "$INSTDIR\AI Chat.exe,0"
+  ; WriteRegStr HKCR "AI.Chat.File" "" "12345智能助手 File"
+  ; WriteRegStr HKCR "AI.Chat.File\DefaultIcon" "" "$INSTDIR\12345智能助手.exe,0"
 !macroend
 
 !macro customUnInstall
   ; 删除注册表项
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Chat"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\12345智能助手"
   
   ; 删除快捷方式
-  Delete "$DESKTOP\AI Chat.lnk"
-  Delete "$SMPROGRAMS\AI Chat\AI Chat.lnk"
-  RMDir "$SMPROGRAMS\AI Chat"
+  Delete "$DESKTOP\12345智能助手.lnk"
+  Delete "$SMPROGRAMS\12345智能助手\12345智能助手.lnk"
+  RMDir "$SMPROGRAMS\12345智能助手"
   
   ; 删除用户数据（可选，谨慎使用）
-  ; RMDir /r "$APPDATA\AI Chat"
+  ; RMDir /r "$APPDATA\12345智能助手"
 !macroend
