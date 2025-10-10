@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import logging
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
@@ -60,23 +61,59 @@ def _load_send_test_request() -> Callable[..., Union[bool, Tuple[bool, Optional[
 
 @router.post("/ticketGeneration", response_model=TicketResponse)
 async def ticket_generation(req: TicketRequest) -> TicketResponse:
+    # Trace: request received
+    try:
+        log_event(
+            log,
+            'ticket_req_received',
+            unique_key=req.unique_key,
+            turns=len(req.conversation),
+        )
+    except Exception:
+        pass
+
     body: Dict[str, List[Dict[str, str]]] = {
         req.unique_key: [{item.source: item.text} for item in req.conversation]
     }
 
+    # Trace: schema transformed for upstream summarizer (log full body)
+    try:
+        log_event(log, 'ticket_req_transformed', body=body)
+    except Exception:
+        pass
+
     try:
         send_test_request = _load_send_test_request()
+
+        log_event(log, 'prepare to send request')
+
+        # Trace: upstream call start
+        start_ts = time.perf_counter()
         result = await asyncio.to_thread(
             send_test_request,
             "ticketGeneration",
             body,
             return_response=True,
         )
+        
+        elapsed_ms = int((time.perf_counter() - start_ts) * 1000)
 
         if isinstance(result, tuple):
             success, payload = result
         else:
             success, payload = bool(result), None
+
+        # Trace: upstream call finished
+        try:
+            log_event(
+                log,
+                'ticket_upstream_return',
+                upstream=_UPSTREAM_URL,
+                success=bool(success),
+                elapsed_ms=elapsed_ms,
+            )
+        except Exception:
+            pass
 
         if not success or not payload:
             log_event(
@@ -85,6 +122,7 @@ async def ticket_generation(req: TicketRequest) -> TicketResponse:
                 upstream=_UPSTREAM_URL,
                 unique_key=req.unique_key,
                 error='send_test_request failed',
+                elapsed_ms=elapsed_ms,
             )
             raise HTTPException(status_code=502, detail='ticket service error')
 
@@ -106,8 +144,12 @@ async def ticket_generation(req: TicketRequest) -> TicketResponse:
         return resp
 
     except HTTPException:
+        # Already logged above; re-raise
         raise
     except Exception as e:
-        log_event(log, 'ticket_proxy_error', upstream=_UPSTREAM_URL, error=str(e))
+        # Trace: unexpected failures
+        try:
+            log_event(log, 'ticket_proxy_error', upstream=_UPSTREAM_URL, error=str(e))
+        except Exception:
+            pass
         raise HTTPException(status_code=502, detail='ticket proxy failed')
-
