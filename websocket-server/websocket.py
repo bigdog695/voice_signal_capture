@@ -77,6 +77,8 @@ app.add_middleware(
 LISTENING_CLIENTS: Dict[str, WebSocket] = {}
 CLIENT_IP_MAPPING: Dict[str, Optional[str]] = {}
 ZMQ_TASK: Optional[asyncio.Task] = None
+# Cache for broadcast mode to lock onto a single peer IP until stream ends
+BROADCAST_ACTIVE_PEER_IP: Optional[str] = None
 
 
 def _client_ip_from_ws(websocket: WebSocket) -> str:
@@ -186,6 +188,7 @@ async def _dispatch_asr_event(evt: Dict):
     unique_key = evt.get('unique_key')
     ssrc = evt.get('ssrc')
     peer_ip = evt.get('peer_ip')
+    is_finished = bool(evt.get('is_finished'))
     text_preview = None
     if 'text' in evt and evt.get('text') is not None:
         try:
@@ -195,10 +198,40 @@ async def _dispatch_asr_event(evt: Dict):
 
     clients_snapshot: List[Tuple[str, WebSocket]] = list(LISTENING_CLIENTS.items())
 
+    global BROADCAST_ACTIVE_PEER_IP
     if WS_BROADCAST_ALL:
+        event_peer_ip = peer_ip or 'unknown'
+        if BROADCAST_ACTIVE_PEER_IP is None:
+            BROADCAST_ACTIVE_PEER_IP = event_peer_ip
+            log_event(
+                log,
+                'broadcast_target_acquired',
+                peer_ip=BROADCAST_ACTIVE_PEER_IP,
+                unique_key=unique_key,
+                ssrc=ssrc,
+            )
+        elif event_peer_ip != BROADCAST_ACTIVE_PEER_IP:
+            log_event(
+                log,
+                'broadcast_skip_peer_mismatch',
+                peer_ip=event_peer_ip,
+                active_peer=BROADCAST_ACTIVE_PEER_IP,
+                unique_key=unique_key,
+                ssrc=ssrc,
+            )
+            return
         # Broadcast to all connected clients
         if not clients_snapshot:
             log_event(log, 'broadcast_no_clients', total_clients=0)
+            if is_finished:
+                log_event(
+                    log,
+                    'broadcast_target_released',
+                    peer_ip=BROADCAST_ACTIVE_PEER_IP,
+                    unique_key=unique_key,
+                    ssrc=ssrc,
+                )
+                BROADCAST_ACTIVE_PEER_IP = None
             return
         log_event(
             log,
@@ -238,8 +271,17 @@ async def _dispatch_asr_event(evt: Dict):
                     reason='broadcast_send_fail',
                     unique_key=unique_key,
                     ssrc=ssrc,
-                    text=text_preview,
+                        text=text_preview,
                 )
+        if is_finished:
+            log_event(
+                log,
+                'broadcast_target_released',
+                peer_ip=BROADCAST_ACTIVE_PEER_IP,
+                unique_key=unique_key,
+                ssrc=ssrc,
+            )
+            BROADCAST_ACTIVE_PEER_IP = None
         return
 
     # --- Original targeted routing by peer_ip ---

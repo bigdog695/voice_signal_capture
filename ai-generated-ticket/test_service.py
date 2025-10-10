@@ -8,7 +8,7 @@
 import json
 import requests
 import time
-from typing import Dict, Any
+from typing import Any, Dict, Optional, Tuple, Union
 
 # 测试配置
 BASE_URL = "http://100.120.241.10:8001"
@@ -160,11 +160,19 @@ def test_mixed_messages():
     return send_test_request("混合消息测试", test_data)
 
 
-def send_test_request(test_name: str, data: Dict[str, Any], expect_error: bool = False) -> bool:
-    """发送测试请求"""
-    print(f"\n测试名称: {test_name}")
-    print(f"请求数据:")
+def send_test_request(
+    test_name: str,
+    data: Dict[str, Any],
+    expect_error: bool = False,
+    return_response: bool = False,
+) -> Union[bool, Tuple[bool, Optional[Dict[str, Any]]]]:
+    """Send a request to the summarizer test endpoint."""
+    print(f"\nTest name: {test_name}")
+    print("Request payload:")
     print(json.dumps(data, ensure_ascii=False, indent=2))
+
+    def _wrap(success: bool, payload: Optional[Dict[str, Any]] = None):
+        return (success, payload) if return_response else success
 
     try:
         start_time = time.time()
@@ -172,56 +180,53 @@ def send_test_request(test_name: str, data: Dict[str, Any], expect_error: bool =
             SUMMARIZE_URL,
             json=data,
             headers={'Content-Type': 'application/json'},
-            timeout=120  # 增加超时时间，因为模型调用可能较慢
+            timeout=120,
         )
-        end_time = time.time()
-
-        print(f"\n响应时间: {end_time - start_time:.2f} 秒")
-        print(f"状态码: {response.status_code}")
+        elapsed = time.time() - start_time
+        print(f"\nElapsed: {elapsed:.2f}s")
+        print(f"Status code: {response.status_code}")
 
         if expect_error:
             if response.status_code >= 400:
-                print("✅ 预期错误，测试通过")
-                print(f"错误信息: {response.json().get('detail', 'Unknown error')}")
-                return True
-            else:
-                print("❌ 预期错误但返回成功，测试失败")
-                return False
-        else:
-            if response.status_code == 200:
-                result = response.json()
-                print("✅ 请求成功")
-                print(f"响应结果:")
-                print(json.dumps(result, ensure_ascii=False, indent=2))
+                detail = response.json().get('detail', 'Unknown error')
+                print("Expected error received.")
+                print(f"Detail: {detail}")
+                return _wrap(True, None)
+            print("Expected error, but request succeeded.")
+            return _wrap(False, None)
 
-                # 验证响应格式
-                required_fields = ['ticket_type', 'ticket_zone', 'ticket_title', 'ticket_content']
-                missing_fields = [field for field in required_fields if field not in result]
+        if response.status_code == 200:
+            result: Dict[str, Any] = response.json()
+            print("Response JSON:")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
 
-                if missing_fields:
-                    print(f"❌ 缺少必要字段: {missing_fields}")
-                    return False
-                else:
-                    print("✅ 响应格式验证通过")
-                    return True
-            else:
-                print(f"❌ 请求失败")
-                try:
-                    error_detail = response.json().get('detail', 'Unknown error')
-                    print(f"错误信息: {error_detail}")
-                except:
-                    print(f"错误响应: {response.text}")
-                return False
+            required_fields = ['ticket_type', 'ticket_zone', 'ticket_title', 'ticket_content']
+            missing_fields = [field for field in required_fields if field not in result]
+
+            if missing_fields:
+                print(f"Missing fields: {missing_fields}")
+                return _wrap(False, result)
+
+            print("Response contains all required fields.")
+            return _wrap(True, result)
+
+        try:
+            detail = response.json().get('detail', 'Unknown error')
+        except Exception:
+            detail = response.text
+        print("Request failed.")
+        print(f"Detail: {detail}")
+        return _wrap(False, None)
 
     except requests.exceptions.Timeout:
-        print("❌ 请求超时")
-        return False
+        print("Request timed out.")
+        return _wrap(False, None)
     except requests.exceptions.ConnectionError:
-        print("❌ 连接失败，请确保服务正在运行")
-        return False
-    except Exception as e:
-        print(f"❌ 请求异常: {e}")
-        return False
+        print("Connection error.")
+        return _wrap(False, None)
+    except Exception as exc:
+        print(f"Unexpected error: {exc}")
+        return _wrap(False, None)
 
 
 def test_invalid_json():

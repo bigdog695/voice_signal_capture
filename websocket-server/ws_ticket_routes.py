@@ -1,15 +1,17 @@
+import asyncio
+import importlib.util
 import logging
-from typing import List, Literal
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
-import httpx
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ValidationError
 
 from common.logging_utils import log_event
 
 
-# Configure the upstream ticket inference URL here
-TICKET_INFER_URL = "http://127.0.0.1:9000/ticketGeneration"
+# Default upstream URL; actual value will be taken from the test helper if available.
+TICKET_INFER_URL = "http://100.120.241.10:8001/summarize"
 
 
 log = logging.getLogger("WSServer")
@@ -17,13 +19,13 @@ router = APIRouter()
 
 
 class ConversationItem(BaseModel):
-    source: Literal["citizen", "hot-line"] = Field(..., description="消息来源：市民(citizen)或热线(hot-line)")
-    text: str = Field(..., description="消息内容（可为中文）")
+    source: Literal["citizen", "hot-line"]
+    text: str
 
 
 class TicketRequest(BaseModel):
-    unique_key: str = Field(..., description="会话唯一标识")
-    conversations: List[ConversationItem] = Field(..., min_items=1, description="对话数组，至少一条")
+    unique_key: str
+    conversation: List[ConversationItem]
 
 
 class TicketResponse(BaseModel):
@@ -33,31 +35,79 @@ class TicketResponse(BaseModel):
     ticket_content: str
 
 
+_SEND_TEST_REQUEST: Optional[
+    Callable[..., Union[bool, Tuple[bool, Optional[Dict[str, Any]]]]]
+] = None
+_UPSTREAM_URL: str = TICKET_INFER_URL
+
+
+def _load_send_test_request() -> Callable[..., Union[bool, Tuple[bool, Optional[Dict[str, Any]]]]]:
+    global _SEND_TEST_REQUEST, _UPSTREAM_URL
+    if _SEND_TEST_REQUEST is None:
+        module_path = Path(__file__).resolve().parent.parent / "ai-generated-ticket" / "test_service.py"
+        spec = importlib.util.spec_from_file_location("ticket_test_service", module_path)
+        if not spec or not spec.loader:
+            raise RuntimeError("Unable to load test_service.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        send_func = getattr(module, "send_test_request", None)
+        if send_func is None:
+            raise RuntimeError("send_test_request not found in test_service.py")
+        _SEND_TEST_REQUEST = send_func
+        _UPSTREAM_URL = getattr(module, "SUMMARIZE_URL", TICKET_INFER_URL)
+    return _SEND_TEST_REQUEST
+
+
 @router.post("/ticketGeneration", response_model=TicketResponse)
 async def ticket_generation(req: TicketRequest) -> TicketResponse:
+    body: Dict[str, List[Dict[str, str]]] = {
+        req.unique_key: [{item.source: item.text} for item in req.conversation]
+    }
+
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.post(TICKET_INFER_URL, json=req.dict())
-            r.raise_for_status()
-            data = r.json()
-        resp = TicketResponse(**data)
+        send_test_request = _load_send_test_request()
+        result = await asyncio.to_thread(
+            send_test_request,
+            "ticketGeneration",
+            body,
+            return_response=True,
+        )
+
+        if isinstance(result, tuple):
+            success, payload = result
+        else:
+            success, payload = bool(result), None
+
+        if not success or not payload:
+            log_event(
+                log,
+                'ticket_proxy_error',
+                upstream=_UPSTREAM_URL,
+                unique_key=req.unique_key,
+                error='send_test_request failed',
+            )
+            raise HTTPException(status_code=502, detail='ticket service error')
+
+        try:
+            resp = TicketResponse(**payload)
+        except ValidationError as e:
+            log_event(log, 'ticket_proxy_invalid_response', upstream=_UPSTREAM_URL, error=str(e))
+            raise HTTPException(status_code=502, detail='ticket service invalid response')
+
         log_event(
             log,
             'ticket_proxy_ok',
-            upstream=TICKET_INFER_URL,
+            upstream=_UPSTREAM_URL,
             unique_key=req.unique_key,
             type=resp.ticket_type,
             zone=resp.ticket_zone,
             title=resp.ticket_title,
         )
         return resp
-    except httpx.TimeoutException as e:
-        log_event(log, 'ticket_proxy_timeout', upstream=TICKET_INFER_URL, error=str(e))
-        raise HTTPException(status_code=504, detail='ticket service timeout')
-    except httpx.HTTPError as e:
-        status = getattr(e.response, 'status_code', 502) if getattr(e, 'response', None) else 502
-        log_event(log, 'ticket_proxy_http_error', upstream=TICKET_INFER_URL, status=status, error=str(e))
-        raise HTTPException(status_code=502, detail='ticket service error')
+
+    except HTTPException:
+        raise
     except Exception as e:
-        log_event(log, 'ticket_proxy_error', upstream=TICKET_INFER_URL, error=str(e))
+        log_event(log, 'ticket_proxy_error', upstream=_UPSTREAM_URL, error=str(e))
         raise HTTPException(status_code=502, detail='ticket proxy failed')
+
