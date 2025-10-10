@@ -10,6 +10,7 @@ import logging
 import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+from pathlib import Path
 
 import requests
 from fastapi import FastAPI, HTTPException, Request
@@ -33,6 +34,30 @@ logger = logging.getLogger(__name__)
 DEEPSEEK_API_URL = "http://127.0.0.1:11434/api/generate"
 MAX_RETRIES = 2
 REQUEST_TIMEOUT = 60
+
+# 加载六安市地区数据
+def load_location_data() -> str:
+    """加载六安市地区从属关系数据，格式化为提示文本"""
+    try:
+        location_file = Path(__file__).parent / "location.json"
+        with open(location_file, 'r', encoding='utf-8') as f:
+            location_data = json.load(f)
+
+        # 格式化为易读的提示文本
+        location_info = "六安市行政区划包括：\n"
+        for districts in location_data.values():
+            for district, towns in districts.items():
+                location_info += f"- {district}：{', '.join(towns[:10])}"
+                if len(towns) > 10:
+                    location_info += f"等{len(towns)}个乡镇街道"
+                location_info += "\n"
+
+        return location_info.strip()
+    except Exception as e:
+        logger.warning(f"加载地区数据失败: {e}，将使用默认配置")
+        return "六安市包含：金安区、裕安区、霍邱县、金寨县、舒城县、霍山县、叶集区等行政区划"
+
+LOCATION_CONTEXT = load_location_data()
 
 # Pydantic 模型定义
 class ConversationEntry(BaseModel):
@@ -63,10 +88,14 @@ class TicketSummarizer:
     def __init__(self):
         self.system_prompt = (
             "你是12345市民热线工单总结员，负责将通话内容转化为规范的工单记录。"
-            "请仅输出严格的JSON格式，不要添加任何解释。"
-            "JSON必须包含以下字段：ticket_type（咨询|求助|投诉|举报|建议|其他）、"
-            "ticket_zone（所属区域）、ticket_title（一句话概括主要诉求）、"
-            "ticket_content（详细描述来电人反映的具体情况，包括起因、经过、诉求）"
+            "请仅输出严格的JSON格式，不要添加任何解释。\n\n"
+            f"【地区背景知识】\n{LOCATION_CONTEXT}\n\n"
+            "【输出要求】\n"
+            "JSON必须包含以下字段：\n"
+            "- ticket_type：工单类型（咨询|求助|投诉|举报|建议|其他）\n"
+            "- ticket_zone：所属区域（优先填写具体的区/县，如果提到乡镇街道则格式为\"XX区/XX镇\"）\n"
+            "- ticket_title：一句话概括主要诉求\n"
+            "- ticket_content：详细描述来电人反映的具体情况，包括起因、经过、诉求"
         )
 
     def format_conversation(self, conversation_data: Dict[str, List[Dict]]) -> str:
