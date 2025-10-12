@@ -455,17 +455,17 @@ ipcMain.on('listening:event', (_ev, data) => {
     const incomingMeta = data && typeof data === 'object' ? data : {};
     const source = incomingMeta.source || data.source || 'unknown';
     const finishedFlag = incomingMeta.isFinished === true || incomingMeta.is_finished === true || (incomingMeta.metadata && (incomingMeta.metadata.is_finished === true || incomingMeta.metadata.isFinished === true));
-    
-    console.log('[main] 📨 listening:event received', { 
-      type: data.type, 
-      source, 
-      finishedFlag, 
+
+    console.log('[main] 📨 listening:event received', {
+      type: data.type,
+      source,
+      finishedFlag,
       conversationFinalized,
       hasActiveConv: !!activeConv,
       activeConvId: activeConv?.id,
-      text: data.text?.substring(0, 50) 
+      text: data.text?.substring(0, 50)
     });
-    
+
     // Check if this is a new session starting (has unique_key and different from current)
     const incomingUniqueKey = incomingMeta.uniqueKey || (incomingMeta.metadata && incomingMeta.metadata.unique_key) || null;
     if (incomingUniqueKey && conversationFinalized) {
@@ -473,7 +473,7 @@ ipcMain.on('listening:event', (_ev, data) => {
       conversationFinalized = false;
       finishStates.clear();
     }
-    
+
     // If conversation is already finalized, ignore all subsequent events until a new session
     // This prevents creating ghost sessions from stray messages after finalization
     if (conversationFinalized) {
@@ -484,25 +484,29 @@ ipcMain.on('listening:event', (_ev, data) => {
       });
       return;
     }
-    
-    appendConversationEvent(data);
-    
+
+    // IMPORTANT: Only append to conversation if not call_finished
+    // call_finished should only finalize, not create new conversation
+    if (data.type !== 'call_finished') {
+      appendConversationEvent(data);
+    }
+
     if (finishedFlag && (source === 'citizen' || source === 'hot-line')) {
       // 使用OR逻辑更新对应source的状态
       const currentState = finishStates.get(source) || false;
       finishStates.set(source, currentState || finishedFlag);
-      
+
       // 检查是否两个source都已finished
       const citizenFinished = finishStates.get('citizen') || false;
       const hotlineFinished = finishStates.get('hot-line') || false;
-      
-      console.log('[main] finish states updated', { 
-        source, 
-        citizenFinished, 
-        hotlineFinished, 
-        finishStates: Object.fromEntries(finishStates) 
+
+      console.log('[main] finish states updated', {
+        source,
+        citizenFinished,
+        hotlineFinished,
+        finishStates: Object.fromEntries(finishStates)
       });
-      
+
       if (citizenFinished && hotlineFinished) {
         console.log('[main] BOTH SOURCES FINISHED! Finalizing conversation');
         const filePath = finalizeConversationIfNeeded('both_sources_finished');
@@ -517,19 +521,26 @@ ipcMain.on('listening:event', (_ev, data) => {
       }
       // 如果只是单方完成，继续处理后续逻辑（但 call_finished 类型会在下面被处理）
     }
-    
+
     if (data.type === 'call_finished') {
-      console.log('[main] call_finished event received', { 
-        conversationFinalized, 
-        hasActiveConv: !!activeConv 
+      console.log('[main] call_finished event received', {
+        conversationFinalized,
+        hasActiveConv: !!activeConv
       });
-      
+
       // If already finalized (e.g., by both_sources_finished), skip this call_finished
       if (conversationFinalized) {
         console.log('[main] 🚫 BLOCKED: call_finished ignored, conversation already finalized');
         return;
       }
-      
+
+      // Append call_finished marker ONLY if we have an active conversation
+      if (activeConv) {
+        appendConversationEvent(data);
+      } else {
+        console.log('[main] call_finished: no active conversation, skipping append');
+      }
+
       const filePath = finalizeConversationIfNeeded('call_finished');
       conversationFinalized = true; // Mark as finalized to ignore subsequent events
       if (filePath) {

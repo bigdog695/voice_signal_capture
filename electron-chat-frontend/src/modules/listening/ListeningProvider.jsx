@@ -113,6 +113,12 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
 
   // Request ticket/summary generation when both sources have finished
   const requestTicketGeneration = useCallback(async () => {
+    // Prevent duplicate ticket generation requests
+    if (sessionCompletedRef.current) {
+      console.log('[ListeningWS] Ticket generation already requested for this session, skipping');
+      return;
+    }
+
     // Note: Ticket generation is now handled by main process
     // Main process has complete conversation history saved in files
     // The main process will send 'ticket:generated' event when ticket is ready
