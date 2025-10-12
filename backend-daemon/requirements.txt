@@ -3,3 +3,14 @@ numpy
 scipy
 pyzmq
 
+# Audio preprocessing with AEC support
+# Install at least one of the following for AEC functionality:
+# - webrtc-audio-processing (recommended, best quality)
+# - speexdsp-python (fallback, good compatibility)
+# If neither is installed, AEC will be disabled but NS will still work
+
+# Recommended (best AEC quality):
+# webrtc-audio-processing>=0.2.0
+
+# Alternative (if webrtc fails to install):
+# speexdsp-python>=1.4.0

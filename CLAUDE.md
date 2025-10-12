@@ -25,6 +25,15 @@ Audio Producers → ZMQ PULL (5556) → ASR Daemon → ZMQ PUB (5557) → WebSoc
 3. WebSocket server subscribes to daemon events and routes to clients by IP matching
 4. Frontend connects via WebSocket to receive real-time transcription events
 
+**ZMQ Message Format:**
+Audio producers can send 2-part or 3-part messages:
+- **2-part**: `[metadata_json, near_end_pcm]` - Standard mode, AEC falls back to noise suppression only
+- **3-part**: `[metadata_json, near_end_pcm, far_end_pcm]` - Full AEC mode with reference signal
+
+Where:
+- `near_end_pcm`: Microphone audio (接线员麦克风 - with potential echo)
+- `far_end_pcm`: Reference audio (市民音频 - what's playing in the headset)
+
 **Event Schema:**
 ```json
 {
@@ -94,6 +103,17 @@ python app.py
 - `OUTPUT_ZMQ_ENDPOINT` (default: `tcp://0.0.0.0:5557`)
 - `ASR_MODEL` (default: `paraformer-zh`)
 - `ASR_MODEL_REV` (default: `v2.0.4`)
+- `ASR_INPUT_SAMPLE_RATE` (default: `8000`)
+- `ASR_ENERGY_GATE` (default: `0`) - Energy gate threshold for silence filtering
+
+#### AEC (Acoustic Echo Cancellation) Settings
+- `ENABLE_AEC` (default: `1`) - Enable/disable echo cancellation
+- `ENABLE_NS` (default: `1`) - Enable/disable noise suppression
+- `ENABLE_AGC` (default: `0`) - Enable/disable automatic gain control
+- `AEC_FRAME_SIZE_MS` (default: `10`) - Frame size in milliseconds (10, 20, or 30)
+- `AEC_FILTER_LENGTH_MS` (default: `200`) - AEC filter length in milliseconds (50-500)
+
+**Note:** AEC requires installing either `webrtc-audio-processing` (recommended) or `speexdsp-python` (fallback). See [requirements.txt](backend-daemon/requirements.txt) for details.
 
 ### WebSocket Server
 - `ASR_EVENTS_ENDPOINT` (default: `tcp://127.0.0.1:5557`)
@@ -122,6 +142,17 @@ python app.py
 - Uses FunASR with configurable Chinese models (default: paraformer-zh)
 - Processes 8kHz PCM audio by default
 - Energy gate filtering available via `ASR_ENERGY_GATE` environment variable
+- **Audio Preprocessing Pipeline:**
+  1. **AEC (Acoustic Echo Cancellation)** - Removes echo from far-end audio leaking into microphone
+  2. **NS (Noise Suppression)** - Reduces background noise
+  3. **AGC (Automatic Gain Control)** - Normalizes audio volume (optional)
+  4. **Resampling** - Converts input audio to 16kHz for ASR model
+  5. **FunASR Recognition** - Generates text transcription
+
+**AEC Backend Support:**
+- Primary: WebRTC Audio Processing Module (best quality, industry standard)
+- Fallback: Speex DSP (good compatibility, lighter weight)
+- Graceful degradation: If no AEC library installed, falls back to noise suppression only
 
 ### AI Ticket Processing
 - Uses DeepSeek 14B model via Ollama for intelligent text summarization

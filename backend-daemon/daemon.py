@@ -79,6 +79,13 @@ MODEL_REV = os.getenv("ASR_MODEL_REV", "v2.0.4")
 ASR_INPUT_SR = int(os.getenv("ASR_INPUT_SAMPLE_RATE", "8000"))
 ASR_ENERGY_GATE = float(os.getenv("ASR_ENERGY_GATE", "0"))  # 0 disables gate
 
+# AEC (Acoustic Echo Cancellation) settings
+ENABLE_AEC = os.getenv("ENABLE_AEC", "1") == "1"  # Enable AEC by default
+ENABLE_NS = os.getenv("ENABLE_NS", "1") == "1"  # Enable noise suppression by default
+ENABLE_AGC = os.getenv("ENABLE_AGC", "0") == "1"  # AGC disabled by default
+AEC_FRAME_SIZE_MS = int(os.getenv("AEC_FRAME_SIZE_MS", "10"))  # Frame size in ms
+AEC_FILTER_LENGTH_MS = int(os.getenv("AEC_FILTER_LENGTH_MS", "200"))  # Filter length in ms
+
 try:
     import torch  # noqa: F401
     DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -86,8 +93,9 @@ except Exception:
     DEVICE = "cpu"
 
 
-# ================= ASR Model =================
+# ================= ASR Model & Preprocessor =================
 asr_funasr_model = None
+audio_preprocessor = None
 
 
 def load_funasr_model():
@@ -112,6 +120,28 @@ def load_funasr_model():
         log_event(log, "asr_model_load_failed", error=str(e))
         asr_funasr_model = None
     return asr_funasr_model
+
+
+def load_audio_preprocessor():
+    global audio_preprocessor
+    if audio_preprocessor is not None:
+        return audio_preprocessor
+    try:
+        from audio_preprocessor import AudioPreprocessor
+        audio_preprocessor = AudioPreprocessor(
+            sample_rate=ASR_INPUT_SR if ASR_INPUT_SR > 0 else 8000,
+            enable_aec=ENABLE_AEC,
+            enable_ns=ENABLE_NS,
+            enable_agc=ENABLE_AGC,
+            frame_size_ms=AEC_FRAME_SIZE_MS,
+            filter_length_ms=AEC_FILTER_LENGTH_MS,
+        )
+        log_event(log, "audio_preprocessor_loaded",
+                  aec=ENABLE_AEC, ns=ENABLE_NS, agc=ENABLE_AGC)
+    except Exception as e:
+        log_event(log, "audio_preprocessor_load_failed", error=str(e))
+        audio_preprocessor = None
+    return audio_preprocessor
 
 
 def _extract_text(result) -> Optional[str]:
@@ -153,11 +183,26 @@ def _load_allow_list(path: str) -> Optional[set]:
         log_event(log, "allow_list_load_error", error=str(e))
         return None
 
-def _asr_generate_blocking(pcm_bytes: bytes) -> Optional[str]:
+def _asr_generate_blocking(pcm_bytes: bytes, far_end_pcm: Optional[bytes] = None) -> Optional[str]:
     try:
         audio = np.frombuffer(pcm_bytes, dtype=np.int16)
         if audio.size == 0:
             return None
+
+        # Apply AEC preprocessing if available
+        if audio_preprocessor is not None:
+            far_audio = None
+            if far_end_pcm:
+                far_audio = np.frombuffer(far_end_pcm, dtype=np.int16)
+                if far_audio.size == 0:
+                    far_audio = None
+
+            # Process with AEC
+            audio = audio_preprocessor.process(audio, far_audio)
+
+            if audio.size == 0:
+                return None
+
         # optional simple energy gate
         if ASR_ENERGY_GATE > 0 and np.abs(audio).mean() < ASR_ENERGY_GATE:
             return None
@@ -194,6 +239,7 @@ def main():
     log.info(f"Input ZMQ:  {INPUT_ZMQ_ENDPOINT} (PULL bind)")
     log.info(f"Output ZMQ: {OUTPUT_ZMQ_ENDPOINT} (PUB bind)")
     log.info(f"Model: {MODEL_NAME} rev={MODEL_REV} device={DEVICE}")
+    log.info(f"AEC: enabled={ENABLE_AEC}, NS={ENABLE_NS}, AGC={ENABLE_AGC}")
 
     # Load whitelist from a file named 'allow_list' under the current script directory.
     allow_list_path = os.path.join(script_dir, 'allow_list')
@@ -211,6 +257,13 @@ def main():
     if asr_funasr_model is None:
         log_event(log, "fatal_model_unavailable")
         raise SystemExit(2)
+
+    # Load audio preprocessor
+    load_audio_preprocessor()
+    if audio_preprocessor is None:
+        log.warning("Audio preprocessor not available, AEC will be disabled")
+    else:
+        log.info("Audio preprocessor loaded successfully")
 
     ctx = zmq.Context.instance()
     pull_sock = ctx.socket(zmq.PULL)
@@ -233,7 +286,16 @@ def main():
     try:
         while True:
             try:
-                meta_raw, pcm = pull_sock.recv_multipart()
+                # Receive message (can be 2-part or 3-part)
+                msg_parts = pull_sock.recv_multipart()
+                if len(msg_parts) == 2:
+                    meta_raw, pcm = msg_parts
+                    far_end_pcm = None
+                elif len(msg_parts) == 3:
+                    meta_raw, pcm, far_end_pcm = msg_parts
+                else:
+                    log_event(log, "invalid_msg_parts", parts=len(msg_parts))
+                    continue
             except Exception as e:
                 log_event(log, "pull_recv_error", error=str(e))
                 time.sleep(0.02)
@@ -266,7 +328,8 @@ def main():
             if pcm:
                 st["chunks"] += 1
                 st["bytes"] += len(pcm)
-                txt = _asr_generate_blocking(pcm)
+                # Pass far_end_pcm to ASR for AEC processing
+                txt = _asr_generate_blocking(pcm, far_end_pcm)
                 if txt:
                     st["last_text"] = txt
                     event = {
