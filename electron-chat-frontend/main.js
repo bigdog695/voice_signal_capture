@@ -380,19 +380,40 @@ function getHistoryMetadata2(filePath) {
 let activeConv = null; // { id, filePath, createdAt, lastEventTs }
 function startConversationIfNeeded(ts) {
   ensureConversationsDir();
-  if (activeConv) return activeConv;
+  if (activeConv) {
+    console.log('[main] startConversationIfNeeded: conversation already active', { id: activeConv.id, filePath: activeConv.filePath });
+    return activeConv;
+  }
   const id = new Date(ts || Date.now()).toISOString().replace(/[:.]/g, '-');
   const filePath = path.join(conversationsDir, id + '.ndjson');
   activeConv = { id, filePath, createdAt: Date.now(), lastEventTs: Date.now() };
+  console.log('[main] ⭐ NEW CONVERSATION CREATED ⭐', { id, filePath });
+  console.log('[main] Stack trace for new conversation:', new Error().stack);
   fs.appendFileSync(filePath, JSON.stringify({ system: 'conversation_start', ts: new Date().toISOString() }) + '\n', 'utf8');
   return activeConv;
 }
 function appendConversationEvent(evt) {
   try {
+    console.log('[main] appendConversationEvent called', { 
+      type: evt.type, 
+      source: evt.source, 
+      hasActiveConv: !!activeConv,
+      activeConvId: activeConv?.id,
+      is_finished: evt.is_finished 
+    });
     startConversationIfNeeded(evt.ts || Date.now());
-    if (!activeConv) return;
+    if (!activeConv) {
+      console.warn('[main] appendConversationEvent: no active conversation after startConversationIfNeeded!');
+      return;
+    }
     activeConv.lastEventTs = Date.now();
-    console.log('[main] appendConversationEvent: saving', { type: evt.type, source: evt.source, text: evt.text, is_finished: evt.is_finished });
+    console.log('[main] appendConversationEvent: saving to file', { 
+      filePath: activeConv.filePath,
+      type: evt.type, 
+      source: evt.source, 
+      text: evt.text?.substring(0, 30), 
+      is_finished: evt.is_finished 
+    });
     fs.appendFileSync(activeConv.filePath, JSON.stringify(evt, null, 0) + '\n', 'utf8');
   } catch (e) {
     console.warn('[main] appendConversationEvent failed', e && e.message);
@@ -403,17 +424,24 @@ function finalizeConversationIfNeeded(reason) {
     console.log('[main] finalizeConversationIfNeeded: no active conversation');
     return null;
   }
-  console.log('[main] finalizeConversationIfNeeded:', { reason, filePath: activeConv.filePath });
+  console.log('[main] 🔴 FINALIZING CONVERSATION 🔴', { reason, filePath: activeConv.filePath, id: activeConv.id });
   const finished = { ...activeConv };
   try {
     fs.appendFileSync(activeConv.filePath, JSON.stringify({ system: 'conversation_end', reason: reason || 'call_finished', ts: new Date().toISOString() }) + '\n', 'utf8');
     // Debug: print file content
     const content = fs.readFileSync(activeConv.filePath, 'utf8');
-    console.log('[main] finalizeConversationIfNeeded: final file content:');
-    console.log(content);
+    const lineCount = content.split('\n').filter(Boolean).length;
+    console.log('[main] finalizeConversationIfNeeded: final file stats:', {
+      filePath: activeConv.filePath,
+      lineCount,
+      sizeBytes: content.length
+    });
+    console.log('[main] finalizeConversationIfNeeded: file content preview (first 500 chars):');
+    console.log(content.substring(0, 500));
   } catch (e) {
     console.warn('[main] finalizeConversationIfNeeded write failed', e && e.message);
   }
+  console.log('[main] 🔴 Setting activeConv to NULL 🔴');
   activeConv = null;
   return finished.filePath;
 }
@@ -428,18 +456,20 @@ ipcMain.on('listening:event', (_ev, data) => {
     const source = incomingMeta.source || data.source || 'unknown';
     const finishedFlag = incomingMeta.isFinished === true || incomingMeta.is_finished === true || (incomingMeta.metadata && (incomingMeta.metadata.is_finished === true || incomingMeta.metadata.isFinished === true));
     
-    console.log('[main] listening:event', { 
+    console.log('[main] 📨 listening:event received', { 
       type: data.type, 
       source, 
       finishedFlag, 
       conversationFinalized,
+      hasActiveConv: !!activeConv,
+      activeConvId: activeConv?.id,
       text: data.text?.substring(0, 50) 
     });
     
     // Check if this is a new session starting (has unique_key and different from current)
     const incomingUniqueKey = incomingMeta.uniqueKey || (incomingMeta.metadata && incomingMeta.metadata.unique_key) || null;
     if (incomingUniqueKey && conversationFinalized) {
-      console.log('[main] New session detected after finalization, resetting state', { incomingUniqueKey });
+      console.log('[main] 🔄 New session detected after finalization, resetting state', { incomingUniqueKey });
       conversationFinalized = false;
       finishStates.clear();
     }
@@ -447,7 +477,11 @@ ipcMain.on('listening:event', (_ev, data) => {
     // If conversation is already finalized, ignore all subsequent events until a new session
     // This prevents creating ghost sessions from stray messages after finalization
     if (conversationFinalized) {
-      console.log('[main] Conversation already finalized, ignoring event to prevent ghost session');
+      console.log('[main] 🚫 BLOCKED: Conversation already finalized, ignoring event to prevent ghost session', {
+        type: data.type,
+        source,
+        text: data.text?.substring(0, 30)
+      });
       return;
     }
     
@@ -479,12 +513,23 @@ ipcMain.on('listening:event', (_ev, data) => {
           });
         }
         finishStates.clear();
+        return; // ← 移到这里，只有双方都完成时才 return
       }
-      return;
+      // 如果只是单方完成，继续处理后续逻辑（但 call_finished 类型会在下面被处理）
     }
     
     if (data.type === 'call_finished') {
-      console.log('[main] call_finished event received');
+      console.log('[main] call_finished event received', { 
+        conversationFinalized, 
+        hasActiveConv: !!activeConv 
+      });
+      
+      // If already finalized (e.g., by both_sources_finished), skip this call_finished
+      if (conversationFinalized) {
+        console.log('[main] 🚫 BLOCKED: call_finished ignored, conversation already finalized');
+        return;
+      }
+      
       const filePath = finalizeConversationIfNeeded('call_finished');
       conversationFinalized = true; // Mark as finalized to ignore subsequent events
       if (filePath) {
