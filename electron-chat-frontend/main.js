@@ -419,11 +419,11 @@ function finalizeConversationIfNeeded(reason) {
 }
 
 const finishStates = new Map(); // Map<'citizen' | 'hot-line', boolean>
+let conversationFinalized = false; // Track if current conversation has been finalized
 
 ipcMain.on('listening:event', (_ev, data) => {
   // data = { type, text, role, source, time, uniqueKey?, isFinished?, finishSequence? }
   try {
-    appendConversationEvent(data);
     const incomingMeta = data && typeof data === 'object' ? data : {};
     const source = incomingMeta.source || data.source || 'unknown';
     const finishedFlag = incomingMeta.isFinished === true || incomingMeta.is_finished === true || (incomingMeta.metadata && (incomingMeta.metadata.is_finished === true || incomingMeta.metadata.isFinished === true));
@@ -432,8 +432,26 @@ ipcMain.on('listening:event', (_ev, data) => {
       type: data.type, 
       source, 
       finishedFlag, 
+      conversationFinalized,
       text: data.text?.substring(0, 50) 
     });
+    
+    // Check if this is a new session starting (has unique_key and different from current)
+    const incomingUniqueKey = incomingMeta.uniqueKey || (incomingMeta.metadata && incomingMeta.metadata.unique_key) || null;
+    if (incomingUniqueKey && conversationFinalized) {
+      console.log('[main] New session detected after finalization, resetting state', { incomingUniqueKey });
+      conversationFinalized = false;
+      finishStates.clear();
+    }
+    
+    // If conversation is already finalized, ignore all subsequent events until a new session
+    // This prevents creating ghost sessions from stray messages after finalization
+    if (conversationFinalized) {
+      console.log('[main] Conversation already finalized, ignoring event to prevent ghost session');
+      return;
+    }
+    
+    appendConversationEvent(data);
     
     if (finishedFlag && (source === 'citizen' || source === 'hot-line')) {
       // 使用OR逻辑更新对应source的状态
@@ -454,6 +472,7 @@ ipcMain.on('listening:event', (_ev, data) => {
       if (citizenFinished && hotlineFinished) {
         console.log('[main] BOTH SOURCES FINISHED! Finalizing conversation');
         const filePath = finalizeConversationIfNeeded('both_sources_finished');
+        conversationFinalized = true; // Mark as finalized to ignore subsequent events
         if (filePath) {
           requestTicketForConversation(filePath).catch(err => {
             console.warn('[main] ticket request failed', err && err.message);
@@ -467,6 +486,7 @@ ipcMain.on('listening:event', (_ev, data) => {
     if (data.type === 'call_finished') {
       console.log('[main] call_finished event received');
       const filePath = finalizeConversationIfNeeded('call_finished');
+      conversationFinalized = true; // Mark as finalized to ignore subsequent events
       if (filePath) {
         requestTicketForConversation(filePath).catch(err => {
           console.warn('[main] ticket request failed', err && err.message);
