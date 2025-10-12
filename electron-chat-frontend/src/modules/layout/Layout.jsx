@@ -5,6 +5,7 @@ import { MonitorView } from '../ui/MonitorView';
 import { ASRView } from '../ui/ASRView';
 import { CallDisplay } from '../ui/CallDisplay';
 import { useListening } from '../hooks/useListening';
+import packageInfo from '../../../package.json';
 
 const parseTimestamp = (value) => {
   if (!value) return null;
@@ -284,6 +285,7 @@ export const Layout = () => {
 
   return (
     <div className="app-container">
+      <div className="version-badge">v{packageInfo.version}</div>
       <Sidebar onOpenSettings={() => setSettingsOpen(true)} onShowMonitor={()=>setView('monitor')} onSelectHistory={handleSelectHistory} />
       <div className="main-content">
         {view === 'monitor' && <MonitorView onClose={() => setView('none')} />}

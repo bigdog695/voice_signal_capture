@@ -18,6 +18,34 @@ body {
 .app-container {
     display: flex;
     height: 100vh;
+    position: relative;
+}
+
+/* 版本号标签 */
+.version-badge {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    padding: 6px 12px;
+    background: rgba(0, 122, 255, 0.1);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(0, 122, 255, 0.2);
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #007aff;
+    z-index: 1000;
+    font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+    letter-spacing: 0.5px;
+    box-shadow: 0 2px 8px rgba(0, 122, 255, 0.15);
+    transition: all 0.2s ease;
+}
+
+.version-badge:hover {
+    background: rgba(0, 122, 255, 0.15);
+    border-color: rgba(0, 122, 255, 0.3);
+    box-shadow: 0 4px 12px rgba(0, 122, 255, 0.25);
+    transform: translateY(-1px);
 }
 
 /* 侧边栏样式 */
@@ -1983,7 +2011,7 @@ body {
 }
 
 .sidebar-header-modern {
-    padding: 24px 20px 20px;
+    padding: 48px 20px 20px;
     border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
 
