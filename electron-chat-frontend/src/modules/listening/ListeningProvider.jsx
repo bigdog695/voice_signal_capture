@@ -107,7 +107,7 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
 
   const clearBubbles = useCallback(() => {
     setBubbles([]);
-    finishStatesRef.current.clear();
+    finishStatesRef.current.clear(); // Clear finish states when starting new conversation
     console.info('[ListeningWS] bubbles cleared');
   }, []);
 
@@ -176,7 +176,8 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
               // 检查是否双方都完成，如果是则请求生成工单/摘要
               if (bubble && bubble.finishSequence >= 2) {
                 console.log('[ListeningWS] Both sources finished via asr_update, requesting ticket generation');
-                finishStatesRef.current.clear();
+                // DON'T clear finishStatesRef here! call_finished events still need it
+                // finishStatesRef.current.clear();
                 // Schedule ticket request on next tick so the end marker is visible
                 setTimeout(() => {
                   requestTicketGeneration();
@@ -198,7 +199,8 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
               });
               if (bubble && bubble.finishSequence >= 2) {
                 console.log('[ListeningWS] Both sources finished via call_finished, requesting ticket generation');
-                finishStatesRef.current.clear();
+                // DON'T clear finishStatesRef here! Other call_finished events still need it
+                // finishStatesRef.current.clear();
                 // Schedule ticket request on next tick so the end marker is visible
                 setTimeout(() => {
                   requestTicketGeneration();
