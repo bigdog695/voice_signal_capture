@@ -223,15 +223,6 @@ async def _dispatch_asr_event(evt: Dict):
         # Broadcast to all connected clients
         if not clients_snapshot:
             log_event(log, 'broadcast_no_clients', total_clients=0)
-            if is_finished:
-                log_event(
-                    log,
-                    'broadcast_target_released',
-                    peer_ip=BROADCAST_ACTIVE_PEER_IP,
-                    unique_key=unique_key,
-                    ssrc=ssrc,
-                )
-                BROADCAST_ACTIVE_PEER_IP = None
             return
         log_event(
             log,
@@ -273,15 +264,6 @@ async def _dispatch_asr_event(evt: Dict):
                     ssrc=ssrc,
                         text=text_preview,
                 )
-        if is_finished:
-            log_event(
-                log,
-                'broadcast_target_released',
-                peer_ip=BROADCAST_ACTIVE_PEER_IP,
-                unique_key=unique_key,
-                ssrc=ssrc,
-            )
-            BROADCAST_ACTIVE_PEER_IP = None
         return
 
     # --- Original targeted routing by peer_ip ---
