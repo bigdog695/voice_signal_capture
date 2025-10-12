@@ -525,7 +525,8 @@ ipcMain.on('listening:event', (_ev, data) => {
     if (data.type === 'call_finished') {
       console.log('[main] call_finished event received', {
         conversationFinalized,
-        hasActiveConv: !!activeConv
+        hasActiveConv: !!activeConv,
+        source
       });
 
       // If already finalized (e.g., by both_sources_finished), skip this call_finished
@@ -541,14 +542,39 @@ ipcMain.on('listening:event', (_ev, data) => {
         console.log('[main] call_finished: no active conversation, skipping append');
       }
 
-      const filePath = finalizeConversationIfNeeded('call_finished');
-      conversationFinalized = true; // Mark as finalized to ignore subsequent events
-      if (filePath) {
-        requestTicketForConversation(filePath).catch(err => {
-          console.warn('[main] ticket request failed', err && err.message);
+      // IMPORTANT: call_finished should also update finish states and check if both sources finished
+      // Do NOT finalize immediately - wait for both sources
+      if (source === 'citizen' || source === 'hot-line') {
+        const currentState = finishStates.get(source) || false;
+        finishStates.set(source, currentState || true);
+
+        const citizenFinished = finishStates.get('citizen') || false;
+        const hotlineFinished = finishStates.get('hot-line') || false;
+
+        console.log('[main] call_finished updated finish states', {
+          source,
+          citizenFinished,
+          hotlineFinished,
+          finishStates: Object.fromEntries(finishStates)
         });
+
+        // Only finalize when BOTH sources have sent call_finished
+        if (citizenFinished && hotlineFinished) {
+          console.log('[main] BOTH SOURCES call_finished! Finalizing conversation');
+          const filePath = finalizeConversationIfNeeded('both_call_finished');
+          conversationFinalized = true;
+          if (filePath) {
+            requestTicketForConversation(filePath).catch(err => {
+              console.warn('[main] ticket request failed', err && err.message);
+            });
+          }
+          finishStates.clear();
+        } else {
+          console.log('[main] call_finished: waiting for other source to finish', {
+            waitingFor: citizenFinished ? 'hot-line' : 'citizen'
+          });
+        }
       }
-      finishStates.clear();
     }
   } catch (e) {
     console.warn('[main] listening:event handling failed', e && e.message);
