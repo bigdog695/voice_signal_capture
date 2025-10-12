@@ -9,6 +9,22 @@ export const MonitorView = ({ onClose }) => {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [userHasScrolled, setUserHasScrolled] = useState(false);
   const lastScrollTime = useRef(0);
+  const [ticketInfo, setTicketInfo] = useState(null);
+
+  // Listen for ticket:generated event from main process
+  useEffect(() => {
+    if (!window.electronAPI || typeof window.electronAPI.on !== 'function') return;
+    
+    const handleTicketGenerated = (data) => {
+      console.log('[MonitorView] ticket:generated received', data);
+      if (data && data.ticket) {
+        setTicketInfo(data.ticket);
+      }
+    };
+    
+    const cleanup = window.electronAPI.on('ticket:generated', handleTicketGenerated);
+    return cleanup;
+  }, []);
 
   // 滚动监听，判断是否显示"滚动到底部"按钮
   useEffect(() => {
@@ -126,6 +142,24 @@ export const MonitorView = ({ onClose }) => {
                   </div>
                 </div>
               ))}
+              {ticketInfo && (
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16, padding: '0 16px' }}>
+                  <div style={{ maxWidth: 520, background: '#f1f5f9', color: '#111827', borderRadius: 8, padding: 16, textAlign: 'left', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
+                    <div style={{ fontWeight: 600, marginBottom: 12, fontSize: '15px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                        <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                      </svg>
+                      工单信息
+                    </div>
+                    <div style={{ lineHeight: 1.8, fontSize: '14px' }}>
+                      <div><span style={{ color: '#6b7280', minWidth: 48, display: 'inline-block' }}>类型：</span><span style={{ fontWeight: 500 }}>{ticketInfo.ticket_type || '-'}</span></div>
+                      <div><span style={{ color: '#6b7280', minWidth: 48, display: 'inline-block' }}>区域：</span><span style={{ fontWeight: 500 }}>{ticketInfo.ticket_zone || '-'}</span></div>
+                      <div><span style={{ color: '#6b7280', minWidth: 48, display: 'inline-block' }}>标题：</span><span style={{ fontWeight: 500 }}>{ticketInfo.ticket_title || '-'}</span></div>
+                      <div><span style={{ color: '#6b7280', minWidth: 48, display: 'inline-block' }}>内容：</span><span style={{ fontWeight: 500 }}>{ticketInfo.ticket_content || '-'}</span></div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             
             {showScrollToBottom && (

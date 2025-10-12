@@ -9,6 +9,7 @@ from typing import Dict, Optional, Set, Tuple, List
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Literal
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.abspath(os.path.join(script_dir, ".."))
@@ -53,7 +54,7 @@ log = logging.getLogger(LOG_NAME)
 EVENT_INTERVAL = float(os.getenv("MOCK_EVENT_INTERVAL", "2.5"))
 EVENT_BROADCAST = os.getenv("MOCK_EVENT_BROADCAST", "1") == "1"
 EVENT_TEXTS = [t.strip() for t in os.getenv("MOCK_EVENT_TEXTS", "语音片段一,语音片段二,语音片段三, 语音片段四").split(",") if t.strip()] or ["示例文本"]
-SERVER_PORT = int(os.getenv("MOCK_SERVER_PORT", "18000"))
+SERVER_PORT = int(os.getenv("MOCK_SERVER_PORT", "8000"))
 HEARTBEAT_SEC = float(os.getenv("MOCK_HEARTBEAT_SEC", "1.0"))
 CLIENT_IDLE_TIMEOUT = float(os.getenv("MOCK_CLIENT_IDLE_TIMEOUT", "30"))
 CYCLES_PER_CALL = max(1, int(os.getenv("MOCK_CYCLES_PER_CALL", "1")))  # 防止 0 或负数
@@ -87,42 +88,48 @@ CLIENT_IP_MAPPING: Dict[str, str] = {}
 
 MOCK_TASK: Optional[asyncio.Task] = None
 
+# Mock session tracking
+MOCK_UNIQUE_KEY: Optional[str] = None
+MOCK_SSRC_COUNTER: int = 10000  # Mock SSRC starting value
 
-def _client_ip_from_ws(ws: WebSocket) -> str:
-    ip = "unknown"
+
+def _client_ip_from_ws(websocket: WebSocket) -> str:
+    """Extract client IP from WebSocket connection (consistent with websocket.py)"""
     try:
-        if hasattr(ws, 'client') and ws.client:
-            ip = ws.client.host
-        elif hasattr(ws, 'scope') and ws.scope.get('client'):
-            ip = ws.scope['client'][0]
-        elif hasattr(ws, 'headers'):
-            xff = ws.headers.get('x-forwarded-for')
-            if xff:
-                ip = xff.split(',')[0].strip()
-            else:
-                xri = ws.headers.get('x-real-ip')
-                if xri:
-                    ip = xri
-    except Exception as e:
-        log_event(log, 'ip_extraction_error', error=str(e))
-    return ip
+        headers = {k.lower(): v for k, v in websocket.headers.items()}
+        for header in ("x-forwarded-for", "x-real-ip", "x-client-ip"):
+            if header in headers and headers[header]:
+                return headers[header].split(",")[0].strip()
+    except Exception:
+        pass
+    client = getattr(websocket, "client", None)
+    if client and getattr(client, "host", None):
+        return client.host
+    return "unknown"
 
 
 async def _send_finish_messages():
     """发送 citizen 和 hot-line 各自的 is_finished = true 消息"""
     if not LISTENING_CLIENTS:
+        log_event(log, 'mock_finish_no_clients')
         return
     
+    global MOCK_SSRC_COUNTER
     # 准备两个 source 的 finish 消息
     sources = ['citizen', 'hot-line']
+    log_event(log, 'mock_finish_start', sources=sources, client_count=len(LISTENING_CLIENTS))
     
     for source in sources:
+        log_event(log, 'mock_finish_preparing', source=source, ssrc=MOCK_SSRC_COUNTER)
         finish_evt_template = {
             'type': 'asr_update',
             'text': f'[{source} finished]',
             'source': source,
-            'is_finished': True
+            'is_finished': True,
+            'unique_key': MOCK_UNIQUE_KEY or 'mock_session',
+            'ssrc': MOCK_SSRC_COUNTER
         }
+        MOCK_SSRC_COUNTER += 1
         
         if EVENT_BROADCAST:
             # 广播模式：发送给所有客户端
@@ -146,31 +153,46 @@ async def _send_finish_messages():
             except Exception as e:
                 log_event(log, 'mock_finish_unicast_error', client_id=cid, source=source, error=str(e))
         
-        # 两个 source 之间稍微间隔一下
-        await asyncio.sleep(0.5)
+        log_event(log, 'mock_finish_sent', source=source)
+        # 连续快速发送双端结束事件，不需要间隔
+        # await asyncio.sleep(2.0)  # 已移除延迟
+    
+    log_event(log, 'mock_finish_complete', sources_sent=len(sources))
 
 
 async def _mock_event_loop():
     """周期性构造模拟 ASR 事件并分发。"""
     idx = 0
     cycle_count = 0  # how many full text cycles completed
-    log_event(log, 'mock_loop_start', interval=EVENT_INTERVAL, broadcast=EVENT_BROADCAST, cycles_per_call=CYCLES_PER_CALL)
+    global MOCK_UNIQUE_KEY, MOCK_SSRC_COUNTER
+    
+    # Initialize mock session
+    import uuid
+    MOCK_UNIQUE_KEY = f"mock_{uuid.uuid4().hex[:12]}"
+    MOCK_SSRC_COUNTER = 10000
+    
+    log_event(log, 'mock_loop_start', interval=EVENT_INTERVAL, broadcast=EVENT_BROADCAST, 
+              cycles_per_call=CYCLES_PER_CALL, unique_key=MOCK_UNIQUE_KEY)
     try:
         while True:
             await asyncio.sleep(EVENT_INTERVAL)
             if not LISTENING_CLIENTS:
                 continue
             text = EVENT_TEXTS[idx % len(EVENT_TEXTS)]
-            # 交替 source: 偶数 -> citizen, 奇数 -> other
-            current_source = 'citizen' if (idx % 2) == 0 else 'other'
+            # 交替 source: 偶数 -> citizen, 奇数 -> hot-line (统一使用 hot-line)
+            current_source = 'citizen' if (idx % 2) == 0 else 'hot-line'
             idx += 1
-            # 事件结构尽量贴近真实 main.py 中 dispatcher 预期
+            # 事件结构完全符合 websocket.py 格式
             base_evt = {
                 'type': 'asr_update',
                 'text': text,
                 'peer_ip': None,  # 发送前填充
-                'source': current_source
+                'source': current_source,
+                'unique_key': MOCK_UNIQUE_KEY,
+                'ssrc': MOCK_SSRC_COUNTER,
+                'is_finished': False
             }
+            MOCK_SSRC_COUNTER += 1
             if EVENT_BROADCAST:
                 # 广播：复制并针对每个 client IP 设置 peer_ip
                 tasks: List[asyncio.Task] = []
@@ -200,11 +222,14 @@ async def _mock_event_loop():
                 if cycle_count >= CYCLES_PER_CALL:
                     # 发送两个 source 各自的 is_finished = true 消息
                     await _send_finish_messages()
-                    # reset for next call
+                    # reset for next call and generate new session
                     cycle_count = 0
-                    # 发完 is_finished 消息后等待 10 秒再开始下一轮
-                    log_event(log, 'mock_waiting_next_round', wait_seconds=10)
-                    await asyncio.sleep(10)
+                    import uuid
+                    MOCK_UNIQUE_KEY = f"mock_{uuid.uuid4().hex[:12]}"
+                    MOCK_SSRC_COUNTER = 10000
+                    # 发完 is_finished 消息后等待 60 秒（1 分钟）再开始下一轮
+                    log_event(log, 'mock_waiting_next_round', wait_seconds=60, new_unique_key=MOCK_UNIQUE_KEY)
+                    await asyncio.sleep(60)
     except asyncio.CancelledError:
         log_event(log, 'mock_loop_cancel')
     finally:
@@ -302,6 +327,17 @@ async def websocket_listening_endpoint(websocket: WebSocket):
 
 
 # ---- Mock REST: ticketGeneration ----
+# 使用与 ws_ticket_routes.py 完全相同的模型定义
+class ConversationItem(BaseModel):
+    source: Literal["citizen", "hot-line"]
+    text: str
+
+
+class TicketRequest(BaseModel):
+    unique_key: str
+    conversation: List[ConversationItem]  # 注意：单数 conversation
+
+
 class TicketResponse(BaseModel):
     ticket_type: str
     ticket_zone: str
@@ -310,13 +346,15 @@ class TicketResponse(BaseModel):
 
 
 @app.post("/ticketGeneration", response_model=TicketResponse)
-async def mock_ticket_generation(payload: Dict):
+async def mock_ticket_generation(req: TicketRequest):
+    """Mock ticket generation endpoint (compatible with ws_ticket_routes.py)"""
     try:
-        conversations = payload.get("conversations") or []
+        log_event(log, 'mock_ticket_req', unique_key=req.unique_key, turns=len(req.conversation))
+        
         texts = []
-        for item in conversations:
+        for item in req.conversation:
             try:
-                t = str(item.get("text", "")).strip()
+                t = str(item.text).strip()
                 if t:
                     texts.append(t)
             except Exception:

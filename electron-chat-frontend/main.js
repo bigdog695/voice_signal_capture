@@ -171,8 +171,9 @@ ipcMain.handle('config:set', async (_e, partial) => {
   try {
     const curr = getConfig();
     const p = Object.assign({}, partial || {});
+    // Only trim whitespace, do not convert localhost
     if (typeof p.backendHost === 'string') {
-      p.backendHost = p.backendHost.replace(/^\s+|\s+$/g, '').replace(/^localhost(?=[:/]|$)/i, '192.168.0.201');
+      p.backendHost = p.backendHost.trim();
     }
     const next = Object.assign({}, curr, p);
     if (typeof saveUserConfig === 'function') {
@@ -391,16 +392,25 @@ function appendConversationEvent(evt) {
     startConversationIfNeeded(evt.ts || Date.now());
     if (!activeConv) return;
     activeConv.lastEventTs = Date.now();
+    console.log('[main] appendConversationEvent: saving', { type: evt.type, source: evt.source, text: evt.text, is_finished: evt.is_finished });
     fs.appendFileSync(activeConv.filePath, JSON.stringify(evt, null, 0) + '\n', 'utf8');
   } catch (e) {
     console.warn('[main] appendConversationEvent failed', e && e.message);
   }
 }
 function finalizeConversationIfNeeded(reason) {
-  if (!activeConv) return null;
+  if (!activeConv) {
+    console.log('[main] finalizeConversationIfNeeded: no active conversation');
+    return null;
+  }
+  console.log('[main] finalizeConversationIfNeeded:', { reason, filePath: activeConv.filePath });
   const finished = { ...activeConv };
   try {
     fs.appendFileSync(activeConv.filePath, JSON.stringify({ system: 'conversation_end', reason: reason || 'call_finished', ts: new Date().toISOString() }) + '\n', 'utf8');
+    // Debug: print file content
+    const content = fs.readFileSync(activeConv.filePath, 'utf8');
+    console.log('[main] finalizeConversationIfNeeded: final file content:');
+    console.log(content);
   } catch (e) {
     console.warn('[main] finalizeConversationIfNeeded write failed', e && e.message);
   }
@@ -532,6 +542,7 @@ function buildTicketRequestFromFile(filePath) {
     const content = fs.readFileSync(filePath, 'utf8');
     const lines = content.split(/\r?\n/).filter(Boolean);
     const events = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    console.log('[main] buildTicketRequestFromFile: total events', events.length);
     const id = path.basename(filePath).replace(/\.ndjson$/, '');
     let unique_key = id;
     for (const evt of events) {
@@ -543,14 +554,38 @@ function buildTicketRequestFromFile(filePath) {
     const conversations = [];
     for (const evt of events) {
       if (!evt) continue;
+      console.log('[main] buildTicketRequestFromFile: processing event', { 
+        type: evt.type, 
+        source: evt.source, 
+        text: evt.text?.substring(0, 30), 
+        is_finished: evt.is_finished,
+        isFinished: evt.isFinished,
+        metadata_is_finished: evt.metadata?.is_finished,
+        metadata_isFinished: evt.metadata?.isFinished
+      });
+      // Skip events with is_finished flag (these are end markers, not conversation content)
+      if (evt.is_finished === true || evt.isFinished === true) {
+        console.log('[main] buildTicketRequestFromFile: skipping is_finished event');
+        continue;
+      }
+      if (evt.metadata && (evt.metadata.is_finished === true || evt.metadata.isFinished === true)) {
+        console.log('[main] buildTicketRequestFromFile: skipping metadata is_finished event');
+        continue;
+      }
+      
       const text = typeof evt.text === 'string' ? evt.text.trim() : '';
       const src = evt.source;
-      if (!text) continue;
+      if (!text) {
+        console.log('[main] buildTicketRequestFromFile: skipping empty text event');
+        continue;
+      }
       if (src === 'citizen' || src === 'hot-line') {
+        console.log('[main] buildTicketRequestFromFile: adding conversation', { source: src, text: text.substring(0, 30) });
         conversations.push({ source: src, text });
       }
     }
-    return { unique_key, conversation: conversations, conversations };
+    console.log('[main] buildTicketRequestFromFile: final conversation count', conversations.length);
+    return { unique_key, conversation: conversations };
   } catch (e) {
     console.warn('[main] buildTicketRequestFromFile failed', e && e.message);
     return null;
@@ -569,6 +604,7 @@ function postJson(url, data, { timeoutMs = 15000 } = {}) {
         port: u.port || (isHttps ? 443 : 80),
         path: u.pathname + (u.search || ''),
         method: 'POST',
+        family: 4,  // Force IPv4
         headers: {
           'Content-Type': 'application/json; charset=utf-8',
           'Content-Length': payload.length
@@ -603,7 +639,15 @@ function postJson(url, data, { timeoutMs = 15000 } = {}) {
 
 async function requestTicketForConversation(filePath) {
   const payload = buildTicketRequestFromFile(filePath);
-  if (!payload || !Array.isArray(payload.conversations) || payload.conversations.length === 0) {
+  console.log('[main] requestTicketForConversation: reading file', filePath);
+  try {
+    const fileContent = fs.readFileSync(filePath, 'utf8');
+    console.log('[main] requestTicketForConversation: file content:');
+    console.log(fileContent);
+  } catch (e) {
+    console.warn('[main] failed to read file for debug', e && e.message);
+  }
+  if (!payload || !Array.isArray(payload.conversation) || payload.conversation.length === 0) {
     console.warn('[main] ticket payload empty, skipping');
     return false;
   }
@@ -612,13 +656,13 @@ async function requestTicketForConversation(filePath) {
     console.warn('[main] ticket request skipped: backend not configured');
     return false;
   }
-  // Normalize localhost to 192.168.0.201 to avoid IPv6 ::1 issues
-  const hostNorm = (cfg.backendHost || '').replace(/^localhost(?=[:/]|$)/i, '192.168.0.201');
+  // Use backend host as-is from config
+  const hostNorm = (cfg.backendHost || '').trim();
   const protocol = cfg.useHttps ? 'https' : 'http';
   const base = `${protocol}://${hostNorm}`;
   const url = `${base}/ticketGeneration`;
   console.log('[main] ticket payload body', JSON.stringify(payload, null, 2));
-  console.log('[main] requesting ticketGeneration', { url, unique_key: payload.unique_key, items: payload.conversations.length, cfg });
+  console.log('[main] requesting ticketGeneration', { url, unique_key: payload.unique_key, items: payload.conversation.length, cfg });
   try {
     const resp = await postJson(url, payload, { timeoutMs: 20000 });
     const ticketEvent = {
@@ -628,6 +672,11 @@ async function requestTicketForConversation(filePath) {
     };
     fs.appendFileSync(filePath, JSON.stringify(ticketEvent) + '\n', 'utf8');
     console.log('[main] ticket appended to history');
+    // Notify renderer process about new ticket
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('ticket:generated', { ticket: resp, filePath });
+      console.log('[main] ticket:generated event sent to renderer');
+    }
     return true;
   } catch (e) {
     console.warn('[main] ticket request error', e && e.message);
@@ -637,6 +686,11 @@ async function requestTicketForConversation(filePath) {
       ts: new Date().toISOString()
     };
     try { fs.appendFileSync(filePath, JSON.stringify(errEvent) + '\n', 'utf8'); } catch(_){}
+    // Notify renderer process about ticket error
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('ticket:error', { error: String(e && e.message || e), filePath });
+      console.log('[main] ticket:error event sent to renderer');
+    }
     return false;
   }
 }

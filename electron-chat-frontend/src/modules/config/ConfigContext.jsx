@@ -1,11 +1,11 @@
 import React, { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
 
 const DEFAULT_CONFIG = {
-  // No default backend to avoid masking config problems
-  backendHost: '',
+  // Default backend for out-of-box experience
+  backendHost: '127.0.0.1:8000',
   useHttps: false,
-  devServerHost: 'localhost:5173',
-  exampleServerHost: 'localhost:8080'
+  devServerHost: '127.0.0.1:5173',
+  exampleServerHost: '127.0.0.1:8080'
 };
 
 const ConfigContext = createContext(null);
@@ -24,31 +24,50 @@ export const ConfigProvider = ({ children }) => {
       try {
         if (window && window.electronAPI && typeof window.electronAPI.invoke === 'function') {
           const cfg = await window.electronAPI.invoke('config:get');
+          console.log('[ConfigContext] Loaded config from main:', cfg);
           if (cfg && mounted) {
-            setBackendHost(cfg.backendHost || '');
+            const host = (cfg.backendHost || DEFAULT_CONFIG.backendHost).trim();
+            setBackendHost(host);
             setUseHttps(!!cfg.useHttps);
             setDevServerHost(cfg.devServerHost || DEFAULT_CONFIG.devServerHost);
             setExampleServerHost(cfg.exampleServerHost || DEFAULT_CONFIG.exampleServerHost);
-            setReady(true);
+            setReady(!!host);
+            console.log('[ConfigContext] Config ready:', { host, useHttps: !!cfg.useHttps });
             return;
           }
         }
-      } catch {}
+      } catch (error) {
+        console.error('[ConfigContext] Failed to load config:', error);
+      }
       if (!mounted) return;
-      // Stay not ready; require user to set config via Settings
+      // Fallback to default config if electron API not available
+      console.log('[ConfigContext] Using default config');
+      setBackendHost(DEFAULT_CONFIG.backendHost);
+      setUseHttps(DEFAULT_CONFIG.useHttps);
+      setReady(true);
     };
     load();
     return () => { mounted = false; };
   }, []);
 
   const saveConfig = useCallback(async (host, https) => {
-    setBackendHost(host);
-    setUseHttps(https);
+    const trimmedHost = (host || '').trim();
+    console.log('[ConfigContext] Saving config:', { host: trimmedHost, https });
+    
+    // Update state immediately
+    setBackendHost(trimmedHost);
+    setUseHttps(!!https);
+    setReady(!!trimmedHost);
+    
+    // Persist to main process
     if (window && window.electronAPI && typeof window.electronAPI.invoke === 'function') {
-      await window.electronAPI.invoke('config:set', { backendHost: host, useHttps: !!https });
+      try {
+        await window.electronAPI.invoke('config:set', { backendHost: trimmedHost, useHttps: !!https });
+        console.log('[ConfigContext] Config saved to main process');
+      } catch (error) {
+        console.error('[ConfigContext] Failed to save config:', error);
+      }
     }
-    // After saving, consider config ready
-    setReady(!!host);
   }, []);
 
   const protocols = useMemo(() => ({
@@ -57,7 +76,9 @@ export const ConfigProvider = ({ children }) => {
   }), [useHttps]);
 
   const urls = useMemo(() => {
-    const host = (backendHost || '').replace(/^localhost(?=[:/]|$)/i, '192.168.0.201');
+    // Use backendHost as-is, no automatic localhost conversion
+    const host = (backendHost || '').trim();
+    console.log('[ConfigContext] Generating URLs with host:', host);
     const make = (path) => {
       if (!host) throw new Error('Backend host not configured');
       return `${protocols.http}://${host}${path}`;
@@ -71,6 +92,7 @@ export const ConfigProvider = ({ children }) => {
       asr: () => makeWs('/ws'),
       listening: () => makeWs('/listening'),
       health: () => make('/health'),
+      ticketGeneration: () => make('/ticketGeneration'),
       base: () => make('')
     };
   }, [protocols, backendHost]);

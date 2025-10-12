@@ -16,8 +16,29 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
   const openedAtRef = useRef(null);
   const seqRef = useRef(0);
   const finishStatesRef = useRef(new Map()); // Map<'citizen' | 'hot-line', boolean>
+  const sessionCompletedRef = useRef(false); // Track if current session has been completed (ticket generated)
+  const currentUniqueKeyRef = useRef(null); // Track current session unique_key
+  const prevListeningUrlRef = useRef(null); // Track previous listening URL to detect real changes
+  
   // Simplified: directly append each incoming ASR message (partial or update) as a new bubble
   const appendBubble = useCallback((text, type, source, extras = {}) => {
+    // Check if this is a new session based on unique_key change
+    const incomingUniqueKey = extras?.unique_key || extras?.uniqueKey || null;
+    if (incomingUniqueKey && currentUniqueKeyRef.current && incomingUniqueKey !== currentUniqueKeyRef.current) {
+      console.log('[ListeningWS] New session detected via unique_key change', {
+        old: currentUniqueKeyRef.current,
+        new: incomingUniqueKey
+      });
+      setBubbles([]);
+      finishStatesRef.current.clear();
+      sessionCompletedRef.current = false;
+    }
+    
+    // Update current unique_key
+    if (incomingUniqueKey) {
+      currentUniqueKeyRef.current = incomingUniqueKey;
+    }
+    
     const role = source === 'citizen' ? 'citizen' : 'other';
     const uniqueKey = extras?.unique_key || extras?.uniqueKey || null;
     const isFinishedFlag = !!(extras && (extras.is_finished === true || extras.isFinished === true || type === 'call_finished'));
@@ -90,6 +111,16 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
     console.info('[ListeningWS] bubbles cleared');
   }, []);
 
+  // Request ticket/summary generation when both sources have finished
+  const requestTicketGeneration = useCallback(async () => {
+    // Note: Ticket generation is now handled by main process
+    // Main process has complete conversation history saved in files
+    // The main process will send 'ticket:generated' event when ticket is ready
+    console.log('[ListeningWS] Ticket generation is handled by main process, waiting for event...');
+    // Mark session as completed to prevent duplicate requests
+    sessionCompletedRef.current = true;
+  }, []);
+
   const stopHeartbeat = useCallback(() => { if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; } }, []);
   const startHeartbeat = useCallback(() => {
     stopHeartbeat();
@@ -130,14 +161,20 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
           case 'asr_update':
             {
               const bubble = appendBubble(data.text, 'asr_update', data.source, data);
-              // 检查是否双方都完成，如果是则清空聊天窗口
+              console.log('[ListeningWS] asr_update processed, bubble:', {
+                hasFinishSequence: !!bubble?.finishSequence,
+                finishSequence: bubble?.finishSequence,
+                isFinished: data.is_finished,
+                source: data.source
+              });
+              // 检查是否双方都完成，如果是则请求生成工单/摘要
               if (bubble && bubble.finishSequence >= 2) {
+                console.log('[ListeningWS] Both sources finished via asr_update, requesting ticket generation');
                 finishStatesRef.current.clear();
-                console.log('[ListeningWS] Both sources finished via asr_update, clearing bubbles');
-                // Schedule clear on next tick so the end marker is briefly visible / persisted
+                // Schedule ticket request on next tick so the end marker is visible
                 setTimeout(() => {
-                  clearBubbles();
-                }, 50);
+                  requestTicketGeneration();
+                }, 100);
               }
             }
             break;
@@ -145,15 +182,21 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
             appendBubble(data.text, 'asr_partial', data.source || 'mock', data);
             break;
           case 'call_finished':
-            // Append an end-of-call marker bubble then clear history when both sources finished
+            // Append an end-of-call marker bubble then request ticket when both sources finished
             {
               const bubble = appendBubble('（结束）', 'call_finished', data.source || 'asr', data);
+              console.log('[ListeningWS] call_finished processed, bubble:', {
+                hasFinishSequence: !!bubble?.finishSequence,
+                finishSequence: bubble?.finishSequence,
+                source: data.source
+              });
               if (bubble && bubble.finishSequence >= 2) {
+                console.log('[ListeningWS] Both sources finished via call_finished, requesting ticket generation');
                 finishStatesRef.current.clear();
-                // Schedule clear on next tick so the end marker is briefly visible / persisted
+                // Schedule ticket request on next tick so the end marker is visible
                 setTimeout(() => {
-                  clearBubbles();
-                }, 50);
+                  requestTicketGeneration();
+                }, 100);
               }
             }
             break;
@@ -183,7 +226,7 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
       console.error('[ListeningWS] connect exception', e.message);
       setStatus('disconnected');
     }
-  }, [urls, appendBubble, startHeartbeat, stopHeartbeat]);
+  }, [urls, appendBubble, startHeartbeat, stopHeartbeat, requestTicketGeneration]);
 
   const disconnect = useCallback(() => {
     manualCloseRef.current = true;
@@ -199,6 +242,43 @@ export const ListeningProvider = ({ autoConnect = true, heartbeatSec = 1, childr
       connect();
     }
   }, [autoConnect, connect, ready]);
+
+  // Reconnect when backend URL actually changes (not just urls object reference)
+  useEffect(() => {
+    if (!ready) return;
+    
+    try {
+      const currentUrl = urls.listening();
+      
+      // Only reconnect if URL string actually changed
+      if (prevListeningUrlRef.current && prevListeningUrlRef.current !== currentUrl) {
+        console.log('[ListeningWS] Backend URL changed, reconnecting...', {
+          old: prevListeningUrlRef.current,
+          new: currentUrl
+        });
+        // Disconnect existing connection
+        if (wsRef.current) {
+          manualCloseRef.current = true;
+          if (connectTimerRef.current) { 
+            clearTimeout(connectTimerRef.current); 
+            connectTimerRef.current = null; 
+          }
+          stopHeartbeat();
+          cleanupSocket();
+        }
+        // Reconnect with new URL
+        if (autoConnect) {
+          manualCloseRef.current = false;
+          reconnectAttemptsRef.current = 0;
+          setTimeout(() => connect(), 100); // Small delay to ensure cleanup
+        }
+      }
+      
+      prevListeningUrlRef.current = currentUrl;
+    } catch (e) {
+      console.error('[ListeningWS] Error in URL change detection:', e);
+    }
+  }, [urls, ready, autoConnect, connect, stopHeartbeat, cleanupSocket]);
 
   useEffect(() => {
     return () => { disconnect(); };

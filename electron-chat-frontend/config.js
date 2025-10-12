@@ -111,8 +111,9 @@ function saveUserConfig(configObject) {
 // 从环境变量、配置文件或默认值获取配置
 function getConfig() {
   const fileConfig = loadConfigFile();
-  // Respect user/app config for backend endpoint; do not let env override it unexpectedly
-  const backendHost = (fileConfig.backendHost || '').replace(/^localhost(?=[:/]|$)/i, '192.168.0.201');
+  // Use backendHost as-is from config, no automatic conversion
+  const backendHost = (fileConfig.backendHost || '').trim();
+  
   return {
     backendHost,
     useHttps: !!fileConfig.useHttps,

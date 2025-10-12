@@ -15,16 +15,28 @@ export const SettingsModal = ({ open, onClose }) => {
   if(!open) return null;
 
   const testConnection = async () => {
-    if (!ready) { setTestResult('配置未加载'); return; }
     setTesting(true); 
     setTestResult('Testing connection...');
     
     try {
+      // Build test URL with current input values (not saved config)
+      const testHost = host.trim();
+      if (!testHost) {
+        setTestResult('✗ 请输入后端地址');
+        setTesting(false);
+        return;
+      }
+      const protocol = https ? 'https' : 'http';
+      const testUrl = `${protocol}://${testHost}/health`;
+      
+      console.log('[Settings] Testing connection to:', testUrl);
+      
       // 1. 测试基本连接
-      const healthRes = await fetch(urls.health());
+      const healthRes = await fetch(testUrl);
       if (!healthRes.ok) throw new Error('Health check failed: HTTP ' + healthRes.status);
       
       const healthData = await healthRes.json();
+      console.log('[Settings] Health check OK:', healthData);
       setTestResult('Health OK, registering whitelist...');
       
       // 2. 注册到白名单
@@ -33,6 +45,7 @@ export const SettingsModal = ({ open, onClose }) => {
       
       setTestResult('✓ Connection OK, Whitelist registered');
     } catch (e) {
+      console.error('[Settings] Test connection failed:', e);
       setTestResult('✗ Failed: ' + e.message);
     } finally { 
       setTesting(false); 
