@@ -87,15 +87,27 @@ class TicketSummarizer:
 
     def __init__(self):
         self.system_prompt = (
-            "你是12345市民热线工单总结员，负责将通话内容转化为规范的工单记录。"
-            "请仅输出严格的JSON格式，不要添加任何解释。\n\n"
+            "你是12345市民热线工单总结员，负责将通话内容转化为规范的工单记录。\n\n"
             f"【地区背景知识】\n{LOCATION_CONTEXT}\n\n"
-            "【输出要求】\n"
-            "JSON必须包含以下字段：\n"
-            "- ticket_type：工单类型（咨询|求助|投诉|举报|建议|其他）\n"
-            "- ticket_zone：所属区域（优先填写具体的区/县，如果提到乡镇街道则格式为\"XX区/XX镇\"）\n"
-            "- ticket_title：一句话概括主要诉求\n"
-            "- ticket_content：详细描述来电人反映的具体情况，包括起因、经过、诉求"
+            "【重要】你必须严格按照以下JSON格式输出，字段名称不能改变：\n"
+            "```json\n"
+            "{\n"
+            '  "ticket_type": "工单类型",\n'
+            '  "ticket_zone": "所属区域",\n'
+            '  "ticket_title": "工单标题",\n'
+            '  "ticket_content": "工单内容"\n'
+            "}\n"
+            "```\n\n"
+            "【字段说明】\n"
+            "1. ticket_type：必须是以下之一：咨询、求助、投诉、举报、建议、其他\n"
+            "2. ticket_zone：尽可能详细的地址（格式：市-区/县-乡镇/街道-村/社区-小区名）\n"
+            "   例如：\"六安市霍邱县三流乡三桥村\" 或 \"六安市金安区三十铺镇阳光花园小区\"\n"
+            "3. ticket_title：一句话概括主要诉求（15字以内）\n"
+            "4. ticket_content：详细描述来电人反映的具体情况，包括起因、经过、诉求\n\n"
+            "【输出规则】\n"
+            "- 只输出JSON，不要任何额外解释\n"
+            "- 字段名称必须完全一致，不能使用其他名称\n"
+            "- 所有字段都是必填项"
         )
 
     def format_conversation(self, conversation_data: Dict[str, List[Dict]]) -> str:
@@ -119,9 +131,11 @@ class TicketSummarizer:
             "prompt": prompt,
             "system": self.system_prompt,
             "stream": False,
+            "format": "json",  # 强制JSON格式输出
             "options": {
-                "temperature": 0.3,
-                "top_p": 0.8
+                "temperature": 0.1,  # 降低随机性，提高格式遵循度
+                "top_p": 0.9,
+                "repeat_penalty": 1.1
             }
         }
 
@@ -231,13 +245,18 @@ class TicketSummarizer:
         """执行工单总结"""
         formatted_conversation = self.format_conversation(conversation_data)
 
-        prompt = f"""
-        请根据以下通话记录，生成12345市民热线工单总结：
+        prompt = f"""请根据以下通话记录生成工单总结。
 
-        {formatted_conversation}
+通话记录：
+{formatted_conversation}
 
-        请分析通话内容，提取关键信息，生成标准化工单记录。输出必须是严格的JSON格式。
-        """
+请严格按照以下格式输出JSON（字段名称不能改变）：
+{{
+  "ticket_type": "咨询|求助|投诉|举报|建议|其他 之一",
+  "ticket_zone": "详细地址（例如：六安市金安区三十铺镇水韵东方小区）",
+  "ticket_title": "一句话概括",
+  "ticket_content": "详细描述"
+}}"""
 
         last_error = None
 
@@ -247,10 +266,11 @@ class TicketSummarizer:
 
                 # 调用模型
                 model_response = self.call_deepseek_model(prompt)
-                logger.debug(f"模型响应: {model_response}")
+                logger.info(f"模型原始响应: {model_response[:500]}...")  # 记录前500字符
 
                 # 清理响应（移除各种非JSON内容）
                 cleaned_response = self.extract_json_from_response(model_response)
+                logger.info(f"提取的JSON: {cleaned_response}")
 
                 # 验证和解析 JSON
                 result = self.validate_and_parse_json(cleaned_response)
