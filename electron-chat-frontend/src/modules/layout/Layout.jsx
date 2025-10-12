@@ -152,7 +152,7 @@ const HistoryView = ({ data, onClose, onRefresh }) => {
               <div><span className="meta-label">开始</span><span className="meta-value">{conversationInfo.start || '—'}</span></div>
               <div><span className="meta-label">结束</span><span className="meta-value">{conversationInfo.end || '—'}</span></div>
             </div>
-            {!ticketInfo && events.some(e => e && e.system === 'conversation_end') && !events.some(e => e && e.system === 'ticket_error') && (
+            {!ticketInfo && events.some(e => e && e.system === 'conversation_end') && !events.some(e => e && e.system === 'ticket_error') && !events.some(e => e && e.system === 'ticket') && (
               <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
                 <div style={{ maxWidth: 520, background: '#f3f4f6', color: '#374151', borderRadius: 8, padding: 16, textAlign: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
@@ -165,7 +165,7 @@ const HistoryView = ({ data, onClose, onRefresh }) => {
                 </div>
               </div>
             )}
-            {events.some(e => e && e.system === 'ticket_error') && (
+            {!ticketInfo && events.some(e => e && e.system === 'ticket_error') && !events.some(e => e && e.system === 'ticket') && (
               <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
                 <div style={{ maxWidth: 520, background: '#fef2f2', color: '#b91c1c', borderRadius: 8, padding: 16, textAlign: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', border: '1px solid #fecaca' }}>
                   工单生成失败，请稍后刷新重试

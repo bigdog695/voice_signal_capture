@@ -10,6 +10,37 @@ export const MonitorView = ({ onClose }) => {
   const [userHasScrolled, setUserHasScrolled] = useState(false);
   const lastScrollTime = useRef(0);
   const [ticketInfo, setTicketInfo] = useState(null);
+  const currentUniqueKeyRef = useRef(null);
+
+  // Track current session's unique_key from bubbles and clear ticket when needed
+  useEffect(() => {
+    // If bubbles are empty, clear everything (new session starting or no data)
+    if (bubbles.length === 0) {
+      if (ticketInfo) {
+        console.log('[MonitorView] Bubbles cleared, clearing ticket');
+        setTicketInfo(null);
+      }
+      currentUniqueKeyRef.current = null;
+      return;
+    }
+    
+    // Get unique_key from the latest bubble that has it
+    const latestBubble = bubbles.find(b => b.uniqueKey || b.metadata?.unique_key);
+    const newUniqueKey = latestBubble?.uniqueKey || latestBubble?.metadata?.unique_key || null;
+    
+    // If unique_key changed, clear ticket info (new session detected)
+    if (newUniqueKey && currentUniqueKeyRef.current && newUniqueKey !== currentUniqueKeyRef.current) {
+      console.log('[MonitorView] Session changed, clearing ticket', {
+        old: currentUniqueKeyRef.current,
+        new: newUniqueKey
+      });
+      setTicketInfo(null);
+    }
+    
+    if (newUniqueKey) {
+      currentUniqueKeyRef.current = newUniqueKey;
+    }
+  }, [bubbles, ticketInfo]);
 
   // Listen for ticket:generated event from main process
   useEffect(() => {
@@ -18,6 +49,11 @@ export const MonitorView = ({ onClose }) => {
     const handleTicketGenerated = (data) => {
       console.log('[MonitorView] ticket:generated received', data);
       if (data && data.ticket) {
+        // Only set ticket if it belongs to current session
+        // We can't verify unique_key directly from data, so we rely on the timing
+        // The main process sends ticket right after the session ends
+        // If bubbles were cleared (new session started), currentUniqueKeyRef would be updated
+        console.log('[MonitorView] Setting ticket for current session');
         setTicketInfo(data.ticket);
       }
     };
