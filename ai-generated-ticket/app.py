@@ -8,6 +8,7 @@
 import json
 import logging
 import time
+import re
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from pathlib import Path
@@ -59,6 +60,118 @@ def load_location_data() -> str:
 
 LOCATION_CONTEXT = load_location_data()
 
+
+class LocationCorrector:
+    """地名矫正器：使用LLM进行地名矫正"""
+
+    def __init__(self, location_file: Path):
+        """初始化地名数据库"""
+        self.location_data = self._load_location_data(location_file)
+        logger.info(f"地名数据库加载完成")
+
+    def _load_location_data(self, location_file: Path) -> Dict:
+        """加载location.json数据"""
+        try:
+            with open(location_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"加载地名数据失败: {e}")
+            return {}
+
+    def correct_zone(self, raw_zone: str, deepseek_api_url: str) -> Dict[str, Any]:
+        """
+        使用LLM矫正地名
+
+        返回: {
+            "corrected": 矫正后的地名,
+            "original": 原始地名,
+            "method": "llm_correction",
+            "success": True/False
+        }
+        """
+        if not raw_zone:
+            return {
+                "corrected": raw_zone,
+                "original": raw_zone,
+                "method": "no_input",
+                "success": False
+            }
+
+        prompt = f"""你是地名校对专家。请根据六安市标准地名库矫正用户输入的地名。
+
+标准地名库：
+{json.dumps(self.location_data, ensure_ascii=False, indent=2)}
+
+用户输入的地名："{raw_zone}"
+
+任务要求：
+1. 识别可能的错别字（同音字、形近字、方言读音等）
+2. 返回最匹配的标准地名
+3. 格式要求：
+   - 保持原有格式（如果输入是"六安市霍邱县冯岭镇拱岗村"，输出也应该是完整地址格式）
+   - 只矫正地名中的错别字，不要改变地址结构
+   - 村名、小区名等可以保留原文
+
+示例：
+输入："六安市霍邱县冯岭镇拱岗村"
+输出："六安市霍邱县冯瓴镇拱岗村"
+
+输入："刘安市金安区三十铺镇"
+输出："六安市金安区三十铺镇"
+
+输入："六安市舒城县山西镇"
+输出："六安市舒城县山七镇"
+
+只返回矫正后的完整地名，不要任何解释或额外文字。"""
+
+        try:
+            payload = {
+                "model": "deepseek-r1:14b",
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,
+                    "top_p": 0.9
+                }
+            }
+
+            response = requests.post(
+                deepseek_api_url,
+                json=payload,
+                timeout=30,
+                headers={'Content-Type': 'application/json'}
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            corrected = result.get('response', '').strip()
+
+            # 移除可能的<think>标签和多余内容
+            corrected = re.sub(r'<think>.*?</think>', '', corrected, flags=re.DOTALL)
+            corrected = re.sub(r'<[^>]+>', '', corrected)
+            corrected = corrected.strip()
+
+            logger.info(f"LLM地名矫正: '{raw_zone}' -> '{corrected}'")
+
+            return {
+                "corrected": corrected,
+                "original": raw_zone,
+                "method": "llm_correction",
+                "success": True,
+                "changed": raw_zone != corrected
+            }
+
+        except Exception as e:
+            logger.error(f"LLM地名矫正失败: {e}，返回原文")
+            return {
+                "corrected": raw_zone,
+                "original": raw_zone,
+                "method": "llm_failed",
+                "success": False,
+                "error": str(e)
+            }
+
+
 # Pydantic 模型定义
 class ConversationEntry(BaseModel):
     citizen: Optional[str] = None
@@ -72,6 +185,7 @@ class TicketSummaryResponse(BaseModel):
     ticket_zone: str
     ticket_title: str
     ticket_content: str
+    zone_correction: Optional[Dict[str, Any]] = None  # 地名矫正元数据
 
 
 # FastAPI 应用实例
@@ -85,7 +199,8 @@ app = FastAPI(
 class TicketSummarizer:
     """工单总结器"""
 
-    def __init__(self):
+    def __init__(self, location_corrector: LocationCorrector):
+        self.location_corrector = location_corrector
         self.system_prompt = (
             "你是12345市民热线工单总结员，负责将通话内容转化为规范的工单记录。\n\n"
             f"【地区背景知识】\n{LOCATION_CONTEXT}\n\n"
@@ -241,8 +356,8 @@ class TicketSummarizer:
             logger.error(f"JSON 验证失败: {e}")
             raise ValueError(f"数据验证失败: {str(e)}")
 
-    def summarize(self, conversation_data: Dict[str, List[Dict]]) -> Dict[str, str]:
-        """执行工单总结"""
+    def summarize(self, conversation_data: Dict[str, List[Dict]]) -> Dict[str, Any]:
+        """执行工单总结（包含地名矫正）"""
         formatted_conversation = self.format_conversation(conversation_data)
 
         prompt = f"""请根据以下通话记录生成工单总结。
@@ -275,6 +390,27 @@ class TicketSummarizer:
                 # 验证和解析 JSON
                 result = self.validate_and_parse_json(cleaned_response)
                 logger.info("工单总结生成成功")
+
+                # 地名矫正（固定二次调用LLM）
+                raw_zone = result.get('ticket_zone', '')
+                logger.info(f"开始地名矫正，原始地名: '{raw_zone}'")
+
+                correction_result = self.location_corrector.correct_zone(
+                    raw_zone,
+                    DEEPSEEK_API_URL
+                )
+
+                # 更新结果
+                result['ticket_zone'] = correction_result['corrected']
+                result['zone_correction'] = correction_result
+
+                if correction_result.get('changed', False):
+                    logger.info(
+                        f"地名已矫正: '{correction_result['original']}' -> '{correction_result['corrected']}'"
+                    )
+                else:
+                    logger.info("地名无需矫正")
+
                 return result
 
             except Exception as e:
@@ -290,8 +426,10 @@ class TicketSummarizer:
         )
 
 
-# 创建工单总结器实例
-summarizer = TicketSummarizer()
+# 创建地名矫正器和工单总结器实例
+location_file = Path(__file__).parent / "location.json"
+location_corrector = LocationCorrector(location_file)
+summarizer = TicketSummarizer(location_corrector)
 
 
 @app.middleware("http")
