@@ -9,6 +9,9 @@ import json
 import logging
 import time
 import re
+import itertools
+import random
+import os
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from pathlib import Path
@@ -21,20 +24,143 @@ import uvicorn
 
 
 # 配置日志
+from logging.handlers import TimedRotatingFileHandler
+
+# 创建日志目录
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+# 配置日志格式
+log_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# 文件处理器 - 按天轮转
+file_handler = TimedRotatingFileHandler(
+    filename=LOG_DIR / 'ticket_service.log',
+    when='midnight',  # 每天午夜轮转
+    interval=1,  # 间隔1天
+    backupCount=30,  # 保留30天
+    encoding='utf-8'
+)
+file_handler.setFormatter(log_formatter)
+file_handler.setLevel(logging.INFO)
+
+# 控制台处理器
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+console_handler.setLevel(logging.INFO)
+
+# 配置根日志记录器
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('ticket_service.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
+    handlers=[file_handler, console_handler]
 )
 logger = logging.getLogger(__name__)
 
 # 常量配置
-DEEPSEEK_API_URL = "http://127.0.0.1:11434/api/generate"
 MAX_RETRIES = 2
 REQUEST_TIMEOUT = 60
+
+# DeepSeek节点配置（从环境变量读取，支持逗号分隔的多个端点）
+DEEPSEEK_ENDPOINTS_ENV = os.environ.get(
+    'DEEPSEEK_ENDPOINTS',
+    'http://127.0.0.1:11434/api/generate'
+)
+DEEPSEEK_ENDPOINTS = [ep.strip() for ep in DEEPSEEK_ENDPOINTS_ENV.split(',')]
+
+
+class DeepSeekLoadBalancer:
+    """DeepSeek API负载均衡器 - 使用轮询策略"""
+
+    def __init__(self, endpoints: List[str]):
+        """
+        初始化负载均衡器
+
+        Args:
+            endpoints: DeepSeek API端点列表
+        """
+        self.endpoints = endpoints
+        self.round_robin = itertools.cycle(endpoints)
+        self.health_status = {ep: True for ep in endpoints}
+        self.request_count = {ep: 0 for ep in endpoints}
+        self.error_count = {ep: 0 for ep in endpoints}
+
+        logger.info(f"初始化DeepSeek负载均衡器，节点数: {len(endpoints)}")
+        for ep in endpoints:
+            logger.info(f"  - {ep}")
+
+    def get_next_endpoint(self) -> str:
+        """
+        获取下一个可用节点（轮询策略 + 健康检查）
+
+        Returns:
+            可用的端点URL
+        """
+        # 尝试找到健康的节点
+        for _ in range(len(self.endpoints)):
+            endpoint = next(self.round_robin)
+            if self.health_status.get(endpoint, True):
+                self.request_count[endpoint] += 1
+                logger.debug(f"选择节点: {endpoint} (请求数: {self.request_count[endpoint]})")
+                return endpoint
+
+        # 所有节点都不健康，随机选择一个重试
+        logger.warning("所有DeepSeek节点都不健康，随机选择节点重试")
+        endpoint = random.choice(self.endpoints)
+        self.request_count[endpoint] += 1
+        return endpoint
+
+    def mark_unhealthy(self, endpoint: str):
+        """
+        标记节点为不健康
+
+        Args:
+            endpoint: 节点URL
+        """
+        self.health_status[endpoint] = False
+        self.error_count[endpoint] += 1
+        logger.warning(
+            f"节点标记为不健康: {endpoint} "
+            f"(累计错误: {self.error_count[endpoint]})"
+        )
+
+    def mark_healthy(self, endpoint: str):
+        """
+        标记节点为健康
+
+        Args:
+            endpoint: 节点URL
+        """
+        was_unhealthy = not self.health_status.get(endpoint, True)
+        self.health_status[endpoint] = True
+        if was_unhealthy:
+            logger.info(f"节点恢复健康: {endpoint}")
+
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        获取负载均衡器统计信息
+
+        Returns:
+            统计信息字典
+        """
+        return {
+            "total_endpoints": len(self.endpoints),
+            "healthy_endpoints": sum(1 for h in self.health_status.values() if h),
+            "endpoints": [
+                {
+                    "url": ep,
+                    "healthy": self.health_status[ep],
+                    "request_count": self.request_count[ep],
+                    "error_count": self.error_count[ep]
+                }
+                for ep in self.endpoints
+            ]
+        }
+
+
+# 创建全局负载均衡器实例
+load_balancer = DeepSeekLoadBalancer(DEEPSEEK_ENDPOINTS)
 
 # 加载六安市地区数据
 def load_location_data() -> str:
@@ -78,9 +204,9 @@ class LocationCorrector:
             logger.error(f"加载地名数据失败: {e}")
             return {}
 
-    def correct_zone(self, raw_zone: str, deepseek_api_url: str) -> Dict[str, Any]:
+    def correct_zone(self, raw_zone: str) -> Dict[str, Any]:
         """
-        使用LLM矫正地名
+        使用LLM矫正地名（使用负载均衡）
 
         返回: {
             "corrected": 矫正后的地名,
@@ -124,6 +250,9 @@ class LocationCorrector:
 
 只返回矫正后的完整地名，不要任何解释或额外文字。"""
 
+        # 使用负载均衡器选择节点
+        endpoint = load_balancer.get_next_endpoint()
+
         try:
             payload = {
                 "model": "deepseek-r1:14b",
@@ -136,12 +265,15 @@ class LocationCorrector:
             }
 
             response = requests.post(
-                deepseek_api_url,
+                endpoint,
                 json=payload,
                 timeout=30,
                 headers={'Content-Type': 'application/json'}
             )
             response.raise_for_status()
+
+            # 标记节点为健康
+            load_balancer.mark_healthy(endpoint)
 
             result = response.json()
             corrected = result.get('response', '').strip()
@@ -151,7 +283,7 @@ class LocationCorrector:
             corrected = re.sub(r'<[^>]+>', '', corrected)
             corrected = corrected.strip()
 
-            logger.info(f"LLM地名矫正: '{raw_zone}' -> '{corrected}'")
+            logger.info(f"LLM地名矫正 (节点: {endpoint}): '{raw_zone}' -> '{corrected}'")
 
             return {
                 "corrected": corrected,
@@ -162,7 +294,9 @@ class LocationCorrector:
             }
 
         except Exception as e:
-            logger.error(f"LLM地名矫正失败: {e}，返回原文")
+            logger.error(f"LLM地名矫正失败 (节点: {endpoint}): {e}，返回原文")
+            # 标记节点为不健康
+            load_balancer.mark_unhealthy(endpoint)
             return {
                 "corrected": raw_zone,
                 "original": raw_zone,
@@ -240,7 +374,7 @@ class TicketSummarizer:
         return formatted_text
 
     def call_deepseek_model(self, prompt: str) -> str:
-        """调用 DeepSeek 模型"""
+        """调用 DeepSeek 模型（使用负载均衡）"""
         payload = {
             "model": "deepseek-r1:14b",
             "prompt": prompt,
@@ -254,20 +388,28 @@ class TicketSummarizer:
             }
         }
 
+        # 使用负载均衡器选择节点
+        endpoint = load_balancer.get_next_endpoint()
+
         try:
             response = requests.post(
-                DEEPSEEK_API_URL,
+                endpoint,
                 json=payload,
                 timeout=REQUEST_TIMEOUT,
                 headers={'Content-Type': 'application/json'}
             )
             response.raise_for_status()
 
+            # 标记节点为健康
+            load_balancer.mark_healthy(endpoint)
+
             result = response.json()
             return result.get('response', '').strip()
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"调用 DeepSeek 模型失败: {e}")
+            logger.error(f"调用 DeepSeek 模型失败 (节点: {endpoint}): {e}")
+            # 标记节点为不健康
+            load_balancer.mark_unhealthy(endpoint)
             raise HTTPException(status_code=500, detail=f"模型调用失败: {str(e)}")
 
     def extract_json_from_response(self, response_text: str) -> str:
@@ -395,10 +537,7 @@ class TicketSummarizer:
                 raw_zone = result.get('ticket_zone', '')
                 logger.info(f"开始地名矫正，原始地名: '{raw_zone}'")
 
-                correction_result = self.location_corrector.correct_zone(
-                    raw_zone,
-                    DEEPSEEK_API_URL
-                )
+                correction_result = self.location_corrector.correct_zone(raw_zone)
 
                 # 更新结果
                 result['ticket_zone'] = correction_result['corrected']
@@ -461,19 +600,32 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """详细的健康检查"""
+    """详细的健康检查（包含负载均衡器状态）"""
     try:
-        # 测试 DeepSeek 服务连接
-        test_response = requests.get("http://127.0.0.1:11434", timeout=5)
+        # 测试 DeepSeek 服务连接（测试第一个节点）
+        test_endpoint = DEEPSEEK_ENDPOINTS[0].replace('/api/generate', '')
+        test_response = requests.get(test_endpoint, timeout=5)
         deepseek_status = "healthy" if test_response.status_code == 200 else "unhealthy"
     except:
         deepseek_status = "unreachable"
 
+    # 获取负载均衡器统计
+    lb_stats = load_balancer.get_stats()
+
     return {
         "service": "healthy",
         "deepseek_service": deepseek_status,
+        "load_balancer": lb_stats,
         "timestamp": datetime.now().isoformat()
     }
+
+
+@app.get("/lb-stats")
+async def get_load_balancer_stats():
+    """
+    获取负载均衡器详细统计信息
+    """
+    return load_balancer.get_stats()
 
 
 @app.post("/summarize", response_model=TicketSummaryResponse)
@@ -540,7 +692,10 @@ async def summarize_ticket(request: Request):
 
 if __name__ == "__main__":
     logger.info("启动 12345 市民热线工单总结服务")
-    logger.info(f"DeepSeek 模型地址: {DEEPSEEK_API_URL}")
+    logger.info(f"DeepSeek 负载均衡配置:")
+    logger.info(f"  - 节点数量: {len(DEEPSEEK_ENDPOINTS)}")
+    for i, ep in enumerate(DEEPSEEK_ENDPOINTS, 1):
+        logger.info(f"  - 节点{i}: {ep}")
 
     uvicorn.run(
         "app:app",
