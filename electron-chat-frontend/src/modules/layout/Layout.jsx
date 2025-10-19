@@ -129,6 +129,24 @@ const HistoryView = ({ data, onClose, onRefresh }) => {
   }, [events]);
 
   const hasError = !!data?.error;
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState(null);
+
+  const handleRefresh = async () => {
+    if (!onRefresh || refreshing) return;
+    setRefreshing(true);
+    setRefreshError(null);
+    try {
+      const result = await onRefresh();
+      if (result && result.error) {
+        setRefreshError(result.error);
+      }
+    } catch (err) {
+      setRefreshError(err && err.message ? err.message : '发生未知错误');
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   return (
     <div className="monitor-view history-mode">
@@ -235,15 +253,24 @@ const HistoryView = ({ data, onClose, onRefresh }) => {
                 )
               )}
             </div>
-            {onRefresh && (
-              <button className="close-button" onClick={onRefresh} title="刷新" style={{ marginTop: 8 }}>
+            {onRefresh && !ticketInfo && (
+              <button
+                className="close-button"
+                onClick={handleRefresh}
+                title={refreshing ? '生成中…' : '刷新'}
+                style={{ marginTop: 8, opacity: refreshing ? 0.75 : 1, cursor: refreshing ? 'default' : 'pointer' }}
+                disabled={refreshing}
+              >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                   <path d="M4 4v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                   <path d="M20 20v-6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                   <path d="M20 10a8 8 0 1 0-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/>
                 </svg>
-                刷新
+                {refreshing ? '生成中…' : '刷新'}
               </button>
+            )}
+            {refreshError && (
+              <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 12 }}>生成失败：{refreshError}</div>
             )}
           </div>
         )}
@@ -292,16 +319,22 @@ export const Layout = () => {
         {view === 'asr' && <ASRView />}
         {view === 'call' && <CallDisplay call={selectedCall} />}
         {view === 'history' && <HistoryView data={historyData} onClose={handleCloseHistory} onRefresh={async () => {
+          if (!historyData?.id || !window.electronAPI?.invoke) {
+            return { ok: false, error: 'invalid_id' };
+          }
           try {
-            if (!historyData?.id || !window.electronAPI?.invoke) return;
             const regen = await window.electronAPI.invoke('history:regenerateTicket', historyData.id);
             if (!regen?.ok) {
               console.warn('[HistoryView] regenerate ticket failed', regen?.error || 'unknown error');
+              return { ok: false, error: regen?.error || 'ticket_request_failed' };
             }
             const fresh = await window.electronAPI.invoke('history:load', historyData.id);
             setHistoryData(fresh);
+            return { ok: true };
           } catch (e) {
-            console.warn('[HistoryView] refresh failed', e && e.message);
+            const msg = e && e.message ? e.message : 'unknown_error';
+            console.warn('[HistoryView] refresh failed', msg);
+            return { ok: false, error: msg };
           }
         }} />}
         {view === 'none' && (

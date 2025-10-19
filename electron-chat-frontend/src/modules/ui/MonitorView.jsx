@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useListening } from '../hooks/useListening';
 import { useHealth } from '../hooks/useHealth';
 
@@ -11,6 +11,10 @@ export const MonitorView = ({ onClose }) => {
   const lastScrollTime = useRef(0);
   const [ticketInfo, setTicketInfo] = useState(null);
   const currentUniqueKeyRef = useRef(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState(null);
+  const [retrying, setRetrying] = useState(false);
+  const [currentTicketFileId, setCurrentTicketFileId] = useState(null);
 
   // Track current session's unique_key from bubbles and clear ticket when needed
   useEffect(() => {
@@ -21,6 +25,10 @@ export const MonitorView = ({ onClose }) => {
         setTicketInfo(null);
       }
       currentUniqueKeyRef.current = null;
+      setIsGenerating(false);
+      setGenerateError(null);
+      setRetrying(false);
+      setCurrentTicketFileId(null);
       return;
     }
     
@@ -35,12 +43,26 @@ export const MonitorView = ({ onClose }) => {
         new: newUniqueKey
       });
       setTicketInfo(null);
+      setIsGenerating(false);
+      setGenerateError(null);
+      setRetrying(false);
+      setCurrentTicketFileId(null);
     }
     
     if (newUniqueKey) {
       currentUniqueKeyRef.current = newUniqueKey;
     }
   }, [bubbles, ticketInfo]);
+
+  useEffect(() => {
+    if (ticketInfo || generateError) {
+      return;
+    }
+    const hasFinished = bubbles.some(b => b && typeof b.finishSequence === 'number' && b.finishSequence >= 2);
+    if (hasFinished) {
+      setIsGenerating(true);
+    }
+  }, [bubbles, ticketInfo, generateError]);
 
   // Listen for ticket:generated event from main process
   useEffect(() => {
@@ -55,12 +77,58 @@ export const MonitorView = ({ onClose }) => {
         // If bubbles were cleared (new session started), currentUniqueKeyRef would be updated
         console.log('[MonitorView] Setting ticket for current session');
         setTicketInfo(data.ticket);
+        setIsGenerating(false);
+        setGenerateError(null);
+        setRetrying(false);
+        if (data.filePath) {
+          const parts = String(data.filePath).split(/[/\\]/);
+          const fileName = parts[parts.length - 1] || '';
+          const fileId = fileName.replace(/\.ndjson$/i, '');
+          setCurrentTicketFileId(fileId || null);
+        }
       }
     };
     
-    const cleanup = window.electronAPI.on('ticket:generated', handleTicketGenerated);
-    return cleanup;
+    const cleanupGenerated = window.electronAPI.on('ticket:generated', handleTicketGenerated);
+
+    const handleTicketError = (data) => {
+      console.log('[MonitorView] ticket:error received', data);
+      setIsGenerating(false);
+      setGenerateError((data && data.error) ? String(data.error) : 'ticket_request_failed');
+      if (data && data.filePath) {
+        const parts = String(data.filePath).split(/[/\\]/);
+        const fileName = parts[parts.length - 1] || '';
+        const fileId = fileName.replace(/\.ndjson$/i, '');
+        setCurrentTicketFileId(fileId || null);
+      }
+    };
+
+    const cleanupError = window.electronAPI.on('ticket:error', handleTicketError);
+    return () => {
+      if (typeof cleanupGenerated === 'function') cleanupGenerated();
+      if (typeof cleanupError === 'function') cleanupError();
+    };
   }, []);
+
+  const handleRetry = useCallback(async () => {
+    if (!currentTicketFileId || !window.electronAPI || typeof window.electronAPI.invoke !== 'function') return;
+    setRetrying(true);
+    setGenerateError(null);
+    setIsGenerating(true);
+    try {
+      const result = await window.electronAPI.invoke('history:regenerateTicket', currentTicketFileId);
+      if (!result || !result.ok) {
+        const reason = result && result.error ? String(result.error) : 'ticket_request_failed';
+        setGenerateError(reason);
+        setIsGenerating(false);
+      }
+    } catch (err) {
+      setGenerateError(err && err.message ? err.message : 'ticket_request_failed');
+      setIsGenerating(false);
+    } finally {
+      setRetrying(false);
+    }
+  }, [currentTicketFileId]);
 
   // 滚动监听，判断是否显示"滚动到底部"按钮
   useEffect(() => {
@@ -178,6 +246,34 @@ export const MonitorView = ({ onClose }) => {
                   </div>
                 </div>
               ))}
+              {isGenerating && !ticketInfo && !generateError && (
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16, padding: '0 16px' }}>
+                  <div style={{ maxWidth: 520, background: '#f3f4f6', color: '#374151', borderRadius: 8, padding: 16, textAlign: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" opacity="0.4" />
+                        <path d="M12 3a9 9 0 0 1 9 9" stroke="currentColor" strokeWidth="2"/>
+                      </svg>
+                      <span>正在生成工单…</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {generateError && !ticketInfo && (
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16, padding: '0 16px' }}>
+                  <div style={{ maxWidth: 520, background: '#fef2f2', color: '#b91c1c', borderRadius: 8, padding: 16, textAlign: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', border: '1px solid #fecaca' }}>
+                    <div style={{ marginBottom: 12 }}>工单生成失败：{generateError}</div>
+                    <button
+                      className="close-button"
+                      style={{ marginTop: 4, minWidth: 120, opacity: retrying ? 0.75 : 1, cursor: retrying ? 'default' : 'pointer' }}
+                      onClick={handleRetry}
+                      disabled={retrying || isGenerating}
+                    >
+                      {retrying || isGenerating ? '重新生成中…' : '重试'}
+                    </button>
+                  </div>
+                </div>
+              )}
               {ticketInfo && (
                 <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16, padding: '0 16px' }}>
                   <div style={{ maxWidth: 520, background: '#f1f5f9', color: '#111827', borderRadius: 8, padding: 16, textAlign: 'left', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>

@@ -345,77 +345,61 @@ class TicketResponse(BaseModel):
     ticket_content: str
 
 
-    ticket_request_counter = 0
+ticket_request_counter = 0
 
 
 @app.post("/ticketGeneration", response_model=TicketResponse)
 async def mock_ticket_generation(req: TicketRequest):
     """Mock ticket generation endpoint (compatible with ws_ticket_routes.py)"""
-    try:
-        log_event(log, 'mock_ticket_req', unique_key=req.unique_key, turns=len(req.conversation))
-        await asyncio.sleep(5)
-
-            global ticket_request_counter
-            ticket_request_counter += 1
-            if ticket_request_counter % 5 == 0:
-                log_event(log, 'mock_ticket_forced_failure', unique_key=req.unique_key, count=ticket_request_counter)
-                raise HTTPException(status_code=500, detail='mock ticket failure')
-        
-        texts = []
-        for item in req.conversation:
-            try:
-                t = str(item.text).strip()
-                if t:
-                    texts.append(t)
-            except Exception:
-                continue
-        joined = "\n".join(texts)
-
-        ticket_type = "咨询"
-        zone = "xxx"
-        title = "咨询事项"
-        content = "咨询"
-
-        # very simple keyword heuristics for mock
-        if any(k in joined for k in ["噪音", "扰民", "夜间施工", "深夜喧哗", "声音大"]):
-            ticket_type = "投诉"
-            title = "噪音扰民处理"
-            content = "噪音扰民"
-        elif any(k in joined for k in ["停水", "自来水", "漏水", "水压", "用水"]):
-            ticket_type = "报修"
-            title = "用水相关问题"
-            content = "供水故障"
-        elif any(k in joined for k in ["停电", "电力", "电线", "电压", "供电"]):
-            ticket_type = "报修"
-            title = "电力相关问题"
-            content = "供电故障"
-        elif any(k in joined for k in ["道路", "交通", "拥堵", "违停", "红绿灯"]):
-            ticket_type = "投诉"
-            title = "道路交通问题"
-            content = "交通管理"
-
-        # Try to make a concise title based on last message
-        last = texts[-1] if texts else ""
-        if last and ticket_type == "咨询" and title == "咨询事项":
-            trimmed = last[:24] + ("…" if len(last) > 24 else "")
-            title = f"咨询{trimmed}"
-
-        return TicketResponse(
-            ticket_type=ticket_type,
-            ticket_zone=zone,
-            ticket_title=title,
-            ticket_content=content,
-        )
-    except Exception as e:
-        log_event(log, 'mock_ticket_error', error=str(e))
-        # Return a generic mock response even on parsing issues
-        return TicketResponse(
-            ticket_type="咨询",
-            ticket_zone="xxx",
-            ticket_title="咨询事项",
-            ticket_content="咨询",
-        )
-
+    log_event(log, 'mock_ticket_req', unique_key=req.unique_key, turns=len(req.conversation))
+    await asyncio.sleep(5)
+    global ticket_request_counter
+    ticket_request_counter += 1
+    if ticket_request_counter % 2 == 0:
+        log_event(log, 'mock_ticket_forced_failure', unique_key=req.unique_key, count=ticket_request_counter)
+        raise HTTPException(status_code=500, detail='mock ticket failure')
+    
+    texts = []
+    for item in req.conversation:
+        try:
+            t = str(item.text).strip()
+            if t:
+                texts.append(t)
+        except Exception:
+            continue
+    joined = "\n".join(texts)
+    ticket_type = "咨询"
+    zone = "xxx"
+    title = "咨询事项"
+    content = "咨询"
+    # very simple keyword heuristics for mock
+    if any(k in joined for k in ["噪音", "扰民", "夜间施工", "深夜喧哗", "声音大"]):
+        ticket_type = "投诉"
+        title = "噪音扰民处理"
+        content = "噪音扰民"
+    elif any(k in joined for k in ["停水", "自来水", "漏水", "水压", "用水"]):
+        ticket_type = "报修"
+        title = "用水相关问题"
+        content = "供水故障"
+    elif any(k in joined for k in ["停电", "电力", "电线", "电压", "供电"]):
+        ticket_type = "报修"
+        title = "电力相关问题"
+        content = "供电故障"
+    elif any(k in joined for k in ["道路", "交通", "拥堵", "违停", "红绿灯"]):
+        ticket_type = "投诉"
+        title = "道路交通问题"
+        content = "交通管理"
+    # Try to make a concise title based on last message
+    last = texts[-1] if texts else ""
+    if last and ticket_type == "咨询" and title == "咨询事项":
+        trimmed = last[:24] + ("…" if len(last) > 24 else "")
+        title = f"咨询{trimmed}"
+    return TicketResponse(
+        ticket_type=ticket_type,
+        ticket_zone=zone,
+        ticket_title=title,
+        ticket_content=content,
+    )
 
 if __name__ == "__main__":
     import uvicorn

@@ -792,10 +792,6 @@ async function requestTicketForConversation(filePath) {
       console.log('[main] requestTicketForConversation skipped: ticket already exists', { filePath });
       return { ok: false, reason: 'already_has_ticket' };
     }
-    if (payloadInfo.hasTicketError) {
-      console.log('[main] requestTicketForConversation skipped: ticket attempt already recorded', { filePath });
-      return { ok: false, reason: 'already_attempted_error' };
-    }
 
     const payload = {
       unique_key: payloadInfo.unique_key,
