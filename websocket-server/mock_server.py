@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Optional, Set, Tuple, List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Literal
@@ -345,11 +345,21 @@ class TicketResponse(BaseModel):
     ticket_content: str
 
 
+    ticket_request_counter = 0
+
+
 @app.post("/ticketGeneration", response_model=TicketResponse)
 async def mock_ticket_generation(req: TicketRequest):
     """Mock ticket generation endpoint (compatible with ws_ticket_routes.py)"""
     try:
         log_event(log, 'mock_ticket_req', unique_key=req.unique_key, turns=len(req.conversation))
+        await asyncio.sleep(5)
+
+            global ticket_request_counter
+            ticket_request_counter += 1
+            if ticket_request_counter % 5 == 0:
+                log_event(log, 'mock_ticket_forced_failure', unique_key=req.unique_key, count=ticket_request_counter)
+                raise HTTPException(status_code=500, detail='mock ticket failure')
         
         texts = []
         for item in req.conversation:

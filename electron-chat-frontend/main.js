@@ -512,9 +512,11 @@ ipcMain.on('listening:event', (_ev, data) => {
         const filePath = finalizeConversationIfNeeded('both_sources_finished');
         conversationFinalized = true; // Mark as finalized to ignore subsequent events
         if (filePath) {
-          requestTicketForConversation(filePath).catch(err => {
-            console.warn('[main] ticket request failed', err && err.message);
-          });
+          requestTicketForConversation(filePath)
+            .then(result => logTicketRequestResult(result, 'both_sources_finished'))
+            .catch(err => {
+              console.warn('[main] ticket request failed', err && err.message);
+            });
         }
         finishStates.clear();
         return; // ← 移到这里，只有双方都完成时才 return
@@ -564,9 +566,11 @@ ipcMain.on('listening:event', (_ev, data) => {
           const filePath = finalizeConversationIfNeeded('both_call_finished');
           conversationFinalized = true;
           if (filePath) {
-            requestTicketForConversation(filePath).catch(err => {
-              console.warn('[main] ticket request failed', err && err.message);
-            });
+            requestTicketForConversation(filePath)
+              .then(result => logTicketRequestResult(result, 'both_call_finished'))
+              .catch(err => {
+                console.warn('[main] ticket request failed', err && err.message);
+              });
           }
           finishStates.clear();
         } else {
@@ -618,8 +622,12 @@ ipcMain.handle('history:regenerateTicket', async (_e, id) => {
   }
   try {
     console.log('[main] history:regenerateTicket invoked', { id });
-    const ok = await requestTicketForConversation(filePath);
-    return ok ? { ok: true } : { ok: false, error: 'ticket_request_failed' };
+    const result = await requestTicketForConversation(filePath);
+    if (result && result.ok) {
+      return { ok: true };
+    }
+    const reason = result && typeof result === 'object' ? (result.reason || result.error || 'ticket_request_failed') : 'ticket_request_failed';
+    return { ok: false, error: reason };
   } catch (err) {
     console.warn('[main] history:regenerateTicket failed', err && err.message);
     return { ok: false, error: String(err && err.message || err) };
@@ -631,7 +639,9 @@ setInterval(() => {
   if (activeConv && Date.now() - activeConv.lastEventTs > 5 * 60 * 1000) {
     const filePath = finalizeConversationIfNeeded('idle_timeout');
     if (filePath) {
-      requestTicketForConversation(filePath).catch(err => console.warn('[main] ticket request failed', err && err.message));
+      requestTicketForConversation(filePath)
+        .then(result => logTicketRequestResult(result, 'idle_timeout'))
+        .catch(err => console.warn('[main] ticket request failed', err && err.message));
     }
     // Clean up finish states for the timed-out conversation
     finishStates.clear();
@@ -639,6 +649,8 @@ setInterval(() => {
 }, 60 * 1000);
 
 // ------- Ticket proxy integration (main process) -------
+const ticketRequestsInFlight = new Set(); // Track in-flight ticket requests by file path
+
 function buildTicketRequestFromFile(filePath) {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
@@ -647,6 +659,8 @@ function buildTicketRequestFromFile(filePath) {
     console.log('[main] buildTicketRequestFromFile: total events', events.length);
     const id = path.basename(filePath).replace(/\.ndjson$/, '');
     let unique_key = id;
+    let hasTicket = false;
+    let hasTicketError = false;
     for (const evt of events) {
       if (evt && (evt.uniqueKey || (evt.metadata && evt.metadata.unique_key))) {
         unique_key = evt.uniqueKey || (evt.metadata && evt.metadata.unique_key) || unique_key;
@@ -656,6 +670,14 @@ function buildTicketRequestFromFile(filePath) {
     const conversations = [];
     for (const evt of events) {
       if (!evt) continue;
+      if (evt.system === 'ticket') {
+        hasTicket = true;
+        continue;
+      }
+      if (evt.system === 'ticket_error') {
+        hasTicketError = true;
+        continue;
+      }
       console.log('[main] buildTicketRequestFromFile: processing event', { 
         type: evt.type, 
         source: evt.source, 
@@ -687,7 +709,7 @@ function buildTicketRequestFromFile(filePath) {
       }
     }
     console.log('[main] buildTicketRequestFromFile: final conversation count', conversations.length);
-    return { unique_key, conversation: conversations };
+    return { unique_key, conversation: conversations, hasTicket, hasTicketError };
   } catch (e) {
     console.warn('[main] buildTicketRequestFromFile failed', e && e.message);
     return null;
@@ -739,60 +761,107 @@ function postJson(url, data, { timeoutMs = 15000 } = {}) {
   });
 }
 
+function logTicketRequestResult(result, context) {
+  if (!result || typeof result !== 'object') {
+    console.warn(`[main] ${context}: ticket request returned invalid result`, result);
+    return;
+  }
+  if (!result.ok) {
+    console.log(`[main] ${context}: ticket request not completed`, result);
+  }
+}
+
 async function requestTicketForConversation(filePath) {
-  const payload = buildTicketRequestFromFile(filePath);
-  console.log('[main] requestTicketForConversation: reading file', filePath);
+  if (!filePath) {
+    return { ok: false, reason: 'invalid_file' };
+  }
+
+  const guardKey = path.resolve(filePath);
+  if (ticketRequestsInFlight.has(guardKey)) {
+    console.log('[main] requestTicketForConversation skipped: already in flight', { filePath });
+    return { ok: false, reason: 'in_flight' };
+  }
+
+  ticketRequestsInFlight.add(guardKey);
   try {
-    const fileContent = fs.readFileSync(filePath, 'utf8');
-    console.log('[main] requestTicketForConversation: file content:');
-    console.log(fileContent);
-  } catch (e) {
-    console.warn('[main] failed to read file for debug', e && e.message);
-  }
-  if (!payload || !Array.isArray(payload.conversation) || payload.conversation.length === 0) {
-    console.warn('[main] ticket payload empty, skipping');
-    return false;
-  }
-  const cfg = getConfig();
-  if (!cfg || !cfg.backendHost) {
-    console.warn('[main] ticket request skipped: backend not configured');
-    return false;
-  }
-  // Use backend host as-is from config
-  const hostNorm = (cfg.backendHost || '').trim();
-  const protocol = cfg.useHttps ? 'https' : 'http';
-  const base = `${protocol}://${hostNorm}`;
-  const url = `${base}/ticketGeneration`;
-  console.log('[main] ticket payload body', JSON.stringify(payload, null, 2));
-  console.log('[main] requesting ticketGeneration', { url, unique_key: payload.unique_key, items: payload.conversation.length, cfg });
-  try {
-    const resp = await postJson(url, payload, { timeoutMs: 20000 });
-    const ticketEvent = {
-      system: 'ticket',
-      ticket: resp,
-      ts: new Date().toISOString()
-    };
-    fs.appendFileSync(filePath, JSON.stringify(ticketEvent) + '\n', 'utf8');
-    console.log('[main] ticket appended to history');
-    // Notify renderer process about new ticket
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('ticket:generated', { ticket: resp, filePath });
-      console.log('[main] ticket:generated event sent to renderer');
+    const payloadInfo = buildTicketRequestFromFile(filePath);
+    if (!payloadInfo) {
+      return { ok: false, reason: 'build_failed' };
     }
-    return true;
-  } catch (e) {
-    console.warn('[main] ticket request error', e && e.message);
-    const errEvent = {
-      system: 'ticket_error',
-      error: String(e && e.message || e),
-      ts: new Date().toISOString()
-    };
-    try { fs.appendFileSync(filePath, JSON.stringify(errEvent) + '\n', 'utf8'); } catch(_){}
-    // Notify renderer process about ticket error
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('ticket:error', { error: String(e && e.message || e), filePath });
-      console.log('[main] ticket:error event sent to renderer');
+    if (payloadInfo.hasTicket) {
+      console.log('[main] requestTicketForConversation skipped: ticket already exists', { filePath });
+      return { ok: false, reason: 'already_has_ticket' };
     }
-    return false;
+    if (payloadInfo.hasTicketError) {
+      console.log('[main] requestTicketForConversation skipped: ticket attempt already recorded', { filePath });
+      return { ok: false, reason: 'already_attempted_error' };
+    }
+
+    const payload = {
+      unique_key: payloadInfo.unique_key,
+      conversation: payloadInfo.conversation
+    };
+    console.log('[main] requestTicketForConversation: generated payload meta', {
+      unique_key: payload.unique_key,
+      items: payload.conversation.length
+    });
+    if (!Array.isArray(payload.conversation) || payload.conversation.length === 0) {
+      console.warn('[main] ticket payload empty, skipping');
+      return { ok: false, reason: 'empty_payload' };
+    }
+
+    console.log('[main] requestTicketForConversation: reading file', filePath);
+    try {
+      const fileContent = fs.readFileSync(filePath, 'utf8');
+      console.log('[main] requestTicketForConversation: file content:');
+      console.log(fileContent);
+    } catch (e) {
+      console.warn('[main] failed to read file for debug', e && e.message);
+    }
+
+    const cfg = getConfig();
+    if (!cfg || !cfg.backendHost) {
+      console.warn('[main] ticket request skipped: backend not configured');
+      return { ok: false, reason: 'backend_not_configured' };
+    }
+    // Use backend host as-is from config
+    const hostNorm = (cfg.backendHost || '').trim();
+    const protocol = cfg.useHttps ? 'https' : 'http';
+    const base = `${protocol}://${hostNorm}`;
+    const url = `${base}/ticketGeneration`;
+    console.log('[main] ticket payload body', JSON.stringify(payload, null, 2));
+    console.log('[main] requesting ticketGeneration', { url, unique_key: payload.unique_key, items: payload.conversation.length, cfg });
+    try {
+      const resp = await postJson(url, payload, { timeoutMs: 20000 });
+      const ticketEvent = {
+        system: 'ticket',
+        ticket: resp,
+        ts: new Date().toISOString()
+      };
+      fs.appendFileSync(filePath, JSON.stringify(ticketEvent) + '\n', 'utf8');
+      console.log('[main] ticket appended to history');
+      // Notify renderer process about new ticket
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('ticket:generated', { ticket: resp, filePath });
+        console.log('[main] ticket:generated event sent to renderer');
+      }
+      return { ok: true };
+    } catch (e) {
+      console.warn('[main] ticket request error', e && e.message);
+      const errEvent = {
+        system: 'ticket_error',
+        error: String(e && e.message || e),
+        ts: new Date().toISOString()
+      };
+      try { fs.appendFileSync(filePath, JSON.stringify(errEvent) + '\n', 'utf8'); } catch(_){ }
+      // Notify renderer process about ticket error
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('ticket:error', { error: String(e && e.message || e), filePath });
+        console.log('[main] ticket:error event sent to renderer');
+      }
+      return { ok: false, reason: 'request_failed', error: String(e && e.message || e) };
+    }
+  } finally {
+    ticketRequestsInFlight.delete(guardKey);
   }
 }
