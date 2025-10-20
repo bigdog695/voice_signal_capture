@@ -67,52 +67,33 @@ class EventQueueManager:
 
     def try_publish_ready_events(self):
         """
-        Publish events that are ready (in order and not waiting for earlier events).
-        Call this periodically or after adding new events.
+        Publish events in order by voice_start_ts (min heap).
+        Simply publishes the earliest event in the queue.
         """
-        current_time = time.time()
-
         for peer_ip, queue in list(self.queues.items()):
             if not queue:
                 continue
 
             while queue:
-                # Peek at the earliest event by voice_start_ts
-                earliest = queue[0]
+                # Always publish the earliest event by voice_start_ts
+                earliest = heapq.heappop(queue)
 
-                # Check if we should publish this event:
-                # 1. It's the next in sequence (voice_start_ts >= last published)
-                # 2. OR it's been waiting too long (max_delay_sec exceeded)
-                last_pub_ts = self.last_published.get(peer_ip, 0)
-                time_waiting = current_time - earliest.receive_time
+                try:
+                    self.pub_sock.send_json(earliest.event, ensure_ascii=False)
+                    self.last_published[peer_ip] = earliest.voice_start_ts
 
-                should_publish = (
-                    earliest.voice_start_ts >= last_pub_ts or
-                    time_waiting >= self.max_delay_sec
-                )
-
-                if should_publish:
-                    # Remove from queue and publish
-                    heapq.heappop(queue)
-
-                    try:
-                        self.pub_sock.send_json(earliest.event, ensure_ascii=False)
-                        self.last_published[peer_ip] = earliest.voice_start_ts
-
-                        log_event(
-                            log,
-                            'event_published_from_queue',
-                            peer_ip=peer_ip,
-                            voice_start_ts=earliest.voice_start_ts,
-                            text=earliest.event.get('text', '')[:50],
-                            queue_size=len(queue),
-                            wait_time_ms=int(time_waiting * 1000)
-                        )
-                    except Exception as e:
-                        log_event(log, 'pub_send_error', error=str(e))
-                else:
-                    # Not ready yet, wait for earlier events
-                    break
+                    time_waiting = time.time() - earliest.receive_time
+                    log_event(
+                        log,
+                        'event_published_from_queue',
+                        peer_ip=peer_ip,
+                        voice_start_ts=earliest.voice_start_ts,
+                        text=earliest.event.get('text', '')[:50],
+                        queue_size=len(queue),
+                        wait_time_ms=int(time_waiting * 1000)
+                    )
+                except Exception as e:
+                    log_event(log, 'pub_send_error', error=str(e))
 
             # Cleanup empty queues
             if not queue:
