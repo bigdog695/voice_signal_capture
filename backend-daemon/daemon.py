@@ -40,14 +40,14 @@ class EventQueueManager:
     Manages priority queues per peer_ip to ensure events are published
     in order of voice_start_ts (when voice actually started speaking).
     """
-    def __init__(self, pub_sock, max_delay_sec: float = 5.0):
+    def __init__(self, pub_sock, min_buffer_sec: float = 2.0):
         """
         Args:
             pub_sock: ZMQ PUB socket to publish events
-            max_delay_sec: Maximum time to buffer events waiting for ordering
+            min_buffer_sec: Minimum time to buffer events before publishing (to handle out-of-order arrival)
         """
         self.pub_sock = pub_sock
-        self.max_delay_sec = max_delay_sec
+        self.min_buffer_sec = min_buffer_sec
         # peer_ip -> priority queue (min heap)
         self.queues: Dict[str, list] = defaultdict(list)
         # peer_ip -> last published voice_start_ts
@@ -68,32 +68,43 @@ class EventQueueManager:
     def try_publish_ready_events(self):
         """
         Publish events in order by voice_start_ts (min heap).
-        Simply publishes the earliest event in the queue.
+        Events must wait at least min_buffer_sec before publishing to allow out-of-order events to arrive.
         """
+        current_time = time.time()
+
         for peer_ip, queue in list(self.queues.items()):
             if not queue:
                 continue
 
             while queue:
-                # Always publish the earliest event by voice_start_ts
-                earliest = heapq.heappop(queue)
+                # Peek at the earliest event by voice_start_ts
+                earliest = queue[0]
 
-                try:
-                    self.pub_sock.send_json(earliest.event, ensure_ascii=False)
-                    self.last_published[peer_ip] = earliest.voice_start_ts
+                # Check if event has been buffered long enough
+                time_waiting = current_time - earliest.receive_time
 
-                    time_waiting = time.time() - earliest.receive_time
-                    log_event(
-                        log,
-                        'event_published_from_queue',
-                        peer_ip=peer_ip,
-                        voice_start_ts=earliest.voice_start_ts,
-                        text=earliest.event.get('text', '')[:50],
-                        queue_size=len(queue),
-                        wait_time_ms=int(time_waiting * 1000)
-                    )
-                except Exception as e:
-                    log_event(log, 'pub_send_error', error=str(e))
+                if time_waiting >= self.min_buffer_sec:
+                    # Remove from queue and publish
+                    heapq.heappop(queue)
+
+                    try:
+                        self.pub_sock.send_json(earliest.event, ensure_ascii=False)
+                        self.last_published[peer_ip] = earliest.voice_start_ts
+
+                        log_event(
+                            log,
+                            'event_published_from_queue',
+                            peer_ip=peer_ip,
+                            voice_start_ts=earliest.voice_start_ts,
+                            text=earliest.event.get('text', '')[:50],
+                            queue_size=len(queue),
+                            wait_time_ms=int(time_waiting * 1000)
+                        )
+                    except Exception as e:
+                        log_event(log, 'pub_send_error', error=str(e))
+                else:
+                    # Not buffered long enough yet, wait for more events
+                    break
 
             # Cleanup empty queues
             if not queue:
@@ -417,8 +428,8 @@ def main():
     call_state: Dict[Tuple[str, str, Optional[str], Optional[str]], Dict[str, object]] = {}
 
     # Initialize event queue manager
-    event_queue_mgr = EventQueueManager(pub_sock, max_delay_sec=5.0)
-    log.info("Event queue manager initialized (max_delay=5.0s)")
+    event_queue_mgr = EventQueueManager(pub_sock, min_buffer_sec=2.0)
+    log.info("Event queue manager initialized (min_buffer=2.0s)")
 
     try:
         while True:
