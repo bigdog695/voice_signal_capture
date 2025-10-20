@@ -21,6 +21,127 @@ import numpy as np
 import scipy.signal
 import zmq
 import math
+import heapq
+from collections import defaultdict
+from dataclasses import dataclass, field
+
+
+# ================= Priority Queue for Event Ordering =================
+@dataclass(order=True)
+class PendingEvent:
+    """Event pending to be published, ordered by voice_start_ts"""
+    voice_start_ts: float
+    event: dict = field(compare=False)
+    receive_time: float = field(compare=False)
+
+
+class EventQueueManager:
+    """
+    Manages priority queues per peer_ip to ensure events are published
+    in order of voice_start_ts (when voice actually started speaking).
+    """
+    def __init__(self, pub_sock, max_delay_sec: float = 5.0):
+        """
+        Args:
+            pub_sock: ZMQ PUB socket to publish events
+            max_delay_sec: Maximum time to buffer events waiting for ordering
+        """
+        self.pub_sock = pub_sock
+        self.max_delay_sec = max_delay_sec
+        # peer_ip -> priority queue (min heap)
+        self.queues: Dict[str, list] = defaultdict(list)
+        # peer_ip -> last published voice_start_ts
+        self.last_published: Dict[str, float] = {}
+
+    def add_event(self, event: dict, voice_start_ts: float):
+        """Add an event to the appropriate peer_ip queue"""
+        peer_ip = event.get('peer_ip', 'unknown')
+        receive_time = time.time()
+
+        pending = PendingEvent(
+            voice_start_ts=voice_start_ts,
+            event=event,
+            receive_time=receive_time
+        )
+        heapq.heappush(self.queues[peer_ip], pending)
+
+    def try_publish_ready_events(self):
+        """
+        Publish events that are ready (in order and not waiting for earlier events).
+        Call this periodically or after adding new events.
+        """
+        current_time = time.time()
+
+        for peer_ip, queue in list(self.queues.items()):
+            if not queue:
+                continue
+
+            while queue:
+                # Peek at the earliest event by voice_start_ts
+                earliest = queue[0]
+
+                # Check if we should publish this event:
+                # 1. It's the next in sequence (voice_start_ts >= last published)
+                # 2. OR it's been waiting too long (max_delay_sec exceeded)
+                last_pub_ts = self.last_published.get(peer_ip, 0)
+                time_waiting = current_time - earliest.receive_time
+
+                should_publish = (
+                    earliest.voice_start_ts >= last_pub_ts or
+                    time_waiting >= self.max_delay_sec
+                )
+
+                if should_publish:
+                    # Remove from queue and publish
+                    heapq.heappop(queue)
+
+                    try:
+                        self.pub_sock.send_json(earliest.event, ensure_ascii=False)
+                        self.last_published[peer_ip] = earliest.voice_start_ts
+
+                        log_event(
+                            log,
+                            'event_published_from_queue',
+                            peer_ip=peer_ip,
+                            voice_start_ts=earliest.voice_start_ts,
+                            text=earliest.event.get('text', '')[:50],
+                            queue_size=len(queue),
+                            wait_time_ms=int(time_waiting * 1000)
+                        )
+                    except Exception as e:
+                        log_event(log, 'pub_send_error', error=str(e))
+                else:
+                    # Not ready yet, wait for earlier events
+                    break
+
+            # Cleanup empty queues
+            if not queue:
+                del self.queues[peer_ip]
+
+    def flush_all(self):
+        """Flush all pending events (call on shutdown or call_finished)"""
+        for peer_ip, queue in list(self.queues.items()):
+            while queue:
+                pending = heapq.heappop(queue)
+                try:
+                    self.pub_sock.send_json(pending.event, ensure_ascii=False)
+                except Exception as e:
+                    log_event(log, 'pub_send_error', error=str(e))
+            del self.queues[peer_ip]
+
+    def flush_peer(self, peer_ip: str):
+        """Flush all pending events for a specific peer_ip"""
+        if peer_ip in self.queues:
+            queue = self.queues[peer_ip]
+            while queue:
+                pending = heapq.heappop(queue)
+                try:
+                    self.pub_sock.send_json(pending.event, ensure_ascii=False)
+                except Exception as e:
+                    log_event(log, 'pub_send_error', error=str(e))
+            del self.queues[peer_ip]
+            if peer_ip in self.last_published:
+                del self.last_published[peer_ip]
 
 
 # ================= Logging =================
@@ -183,7 +304,14 @@ def _load_allow_list(path: str) -> Optional[set]:
         log_event(log, "allow_list_load_error", error=str(e))
         return None
 
-def _asr_generate_blocking(pcm_bytes: bytes, far_end_pcm: Optional[bytes] = None) -> Optional[str]:
+def _asr_generate_blocking(pcm_bytes: bytes, far_end_pcm: Optional[bytes] = None) -> Optional[Dict]:
+    """
+    Process audio and return ASR result with VAD timestamp.
+
+    Returns:
+        Dict with keys: 'text', 'vad_start_ms' (first voice activity timestamp in ms)
+        or None if no speech detected
+    """
     try:
         audio = np.frombuffer(pcm_bytes, dtype=np.int16)
         if audio.size == 0:
@@ -223,10 +351,34 @@ def _asr_generate_blocking(pcm_bytes: bytes, far_end_pcm: Optional[bytes] = None
             down //= g
             audio_f = scipy.signal.resample_poly(audio, up=up, down=down).astype(np.float32) / 32768.0
 
-        result = asr_funasr_model.generate(input=audio_f)
+        # Generate with sentence timestamp to get VAD info
+        result = asr_funasr_model.generate(
+            input=audio_f,
+            sentence_timestamp=True,  # Enable VAD timestamps
+        )
+
         txt = _extract_text(result)
-        if txt:
-            return txt
+        if not txt:
+            return None
+
+        # Extract VAD timestamp (first voice activity start time in ms)
+        vad_start_ms = 0
+        try:
+            if isinstance(result, list) and result:
+                item = result[0]
+                if isinstance(item, dict):
+                    # FunASR returns timestamp as [[start_ms, end_ms], ...]
+                    timestamp = item.get('timestamp')
+                    if timestamp and isinstance(timestamp, list) and len(timestamp) > 0:
+                        if isinstance(timestamp[0], list) and len(timestamp[0]) > 0:
+                            vad_start_ms = int(timestamp[0][0])
+        except Exception as e:
+            log_event(log, "vad_timestamp_extract_error", error=str(e))
+
+        return {
+            'text': txt,
+            'vad_start_ms': vad_start_ms
+        }
     except Exception as e:
         log_event(log, "asr_generate_error", error=str(e))
     return None
@@ -283,6 +435,10 @@ def main():
     # state minimal: (peer_ip, source, unique_key, ssrc) -> {chunks, bytes}
     call_state: Dict[Tuple[str, str, Optional[str], Optional[str]], Dict[str, object]] = {}
 
+    # Initialize event queue manager
+    event_queue_mgr = EventQueueManager(pub_sock, max_delay_sec=5.0)
+    log.info("Event queue manager initialized (max_delay=5.0s)")
+
     try:
         while True:
             try:
@@ -329,9 +485,17 @@ def main():
                 st["chunks"] += 1
                 st["bytes"] += len(pcm)
                 # Pass far_end_pcm to ASR for AEC processing
-                txt = _asr_generate_blocking(pcm, far_end_pcm)
-                if txt:
+                asr_result = _asr_generate_blocking(pcm, far_end_pcm)
+                if asr_result:
+                    txt = asr_result['text']
+                    vad_start_ms = asr_result['vad_start_ms']
                     st["last_text"] = txt
+
+                    # Calculate voice_start_ts based on chunk_start_ts + VAD offset
+                    chunk_start_ts = start_ts if start_ts is not None else 0
+                    voice_start_ts = chunk_start_ts + (vad_start_ms / 1000.0)
+
+                    # Build event with new timestamp fields
                     event = {
                         'type': 'asr_update',
                         'text': txt,
@@ -340,6 +504,10 @@ def main():
                         'unique_key': unique_key,
                         'ssrc': ssrc,
                         'is_finished': is_finished,
+                        # New timestamp fields
+                        'voice_start_ts': voice_start_ts,  # Actual voice start time
+                        'chunk_start_ts': chunk_start_ts,  # Original chunk start time
+                        'offset_ms': vad_start_ms,  # VAD offset from chunk start
                     }
                     log_event(
                         log,
@@ -350,13 +518,21 @@ def main():
                         unique_key=unique_key,
                         ssrc=ssrc,
                         is_finished=is_finished,
+                        voice_start_ts=voice_start_ts,
+                        vad_offset_ms=vad_start_ms,
                     )
-                    try:
-                        pub_sock.send_json(event, ensure_ascii=False)
-                    except Exception as e:
-                        log_event(log, 'pub_send_error', error=str(e))
+
+                    # Add to priority queue instead of direct publish
+                    event_queue_mgr.add_event(event, voice_start_ts)
+
+                    # Try to publish ready events
+                    event_queue_mgr.try_publish_ready_events()
 
             if is_finished:
+                # Flush all pending events for this peer before sending call_finished
+                log_event(log, 'flushing_pending_events', peer_ip=peer_ip, source=source)
+                event_queue_mgr.flush_peer(peer_ip)
+
                 finish_evt = {
                     'type': 'call_finished',
                     'text': '',
@@ -386,6 +562,10 @@ def main():
     except KeyboardInterrupt:
         log_event(log, "daemon_interrupt")
     finally:
+        # Flush all pending events before shutdown
+        log_event(log, "flushing_all_pending_events_on_shutdown")
+        event_queue_mgr.flush_all()
+
         try:
             pull_sock.close(0)
             pub_sock.close(0)
