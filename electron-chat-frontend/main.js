@@ -723,7 +723,7 @@ ipcMain.handle('history:regenerateTicket', async (_e, id) => {
   }
   try {
     console.log('[main] history:regenerateTicket invoked', { id });
-    const result = await requestTicketForConversation(filePath);
+    const result = await requestTicketForConversation(filePath, { force: true });
     if (result && result.ok) {
       return { ok: true };
     }
@@ -872,7 +872,8 @@ function logTicketRequestResult(result, context) {
   }
 }
 
-async function requestTicketForConversation(filePath) {
+async function requestTicketForConversation(filePath, options) {
+  const force = !!(options && options.force);
   if (!filePath) {
     return { ok: false, reason: 'invalid_file' };
   }
@@ -889,7 +890,7 @@ async function requestTicketForConversation(filePath) {
     if (!payloadInfo) {
       return { ok: false, reason: 'build_failed' };
     }
-    if (payloadInfo.hasTicket) {
+    if (payloadInfo.hasTicket && !force) {
       console.log('[main] requestTicketForConversation skipped: ticket already exists', { filePath });
       return { ok: false, reason: 'already_has_ticket' };
     }
@@ -927,7 +928,7 @@ async function requestTicketForConversation(filePath) {
     const base = `${protocol}://${hostNorm}`;
     const url = `${base}/ticketGeneration`;
     console.log('[main] ticket payload body', JSON.stringify(payload, null, 2));
-    console.log('[main] requesting ticketGeneration', { url, unique_key: payload.unique_key, items: payload.conversation.length, cfg });
+    console.log('[main] requesting ticketGeneration', { url, unique_key: payload.unique_key, items: payload.conversation.length, cfg, force });
     try {
       const resp = await postJson(url, payload, { timeoutMs: 20000 });
       const ticketEvent = {

@@ -48,7 +48,7 @@ const HistoryView = ({ data, onClose, onRefresh }) => {
   const events = useMemo(() => (Array.isArray(data?.events) ? data.events : []), [data]);
   const ticketInfo = useMemo(() => {
     if (!events.length) return null;
-    const t = events.find(e => e && e.system === 'ticket' && e.ticket);
+    const t = [...events].reverse().find(e => e && e.system === 'ticket' && e.ticket);
     return t && t.ticket ? t.ticket : null;
   }, [events]);
   const hasEnd = useMemo(() => events.some(e => e && e.system === 'conversation_end'), [events]);
