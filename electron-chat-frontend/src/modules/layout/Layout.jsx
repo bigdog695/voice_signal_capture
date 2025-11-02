@@ -253,11 +253,11 @@ const HistoryView = ({ data, onClose, onRefresh }) => {
                 )
               )}
             </div>
-            {onRefresh && !ticketInfo && (
+{onRefresh && (
               <button
                 className="close-button"
                 onClick={handleRefresh}
-                title={refreshing ? '生成中…' : '刷新'}
+                title={refreshing ? '\u6b63\u5728\u91cd\u65b0\u751f\u6210...' : '\u91cd\u65b0\u751f\u6210\u5de5\u5355'}
                 style={{ marginTop: 8, opacity: refreshing ? 0.75 : 1, cursor: refreshing ? 'default' : 'pointer' }}
                 disabled={refreshing}
               >
@@ -266,7 +266,7 @@ const HistoryView = ({ data, onClose, onRefresh }) => {
                   <path d="M20 20v-6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                   <path d="M20 10a8 8 0 1 0-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/>
                 </svg>
-                {refreshing ? '生成中…' : '刷新'}
+                {refreshing ? '\u6b63\u5728\u91cd\u65b0\u751f\u6210...' : '\u91cd\u65b0\u751f\u6210\u5de5\u5355'}
               </button>
             )}
             {refreshError && (
@@ -284,6 +284,7 @@ export const Layout = () => {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selectedCall, setSelectedCall] = useState(null);
   const [historyData, setHistoryData] = useState(null);
+  const [clientIp, setClientIp] = useState('');
   const { lastAsrUpdate } = useListening();
   const lastHandledUpdateRef = useRef(null);
 
@@ -299,6 +300,27 @@ export const Layout = () => {
     setHistoryData(null);
   };
 
+  // Fetch local IPv4 once and display next to version
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        if (!window?.electronAPI?.invoke) {
+          console.warn('[Layout] electronAPI.invoke not available');
+          return;
+        }
+        const cfg = await window.electronAPI.invoke('config:get');
+        console.log('[Layout] config:get ->', cfg);
+        const ip = cfg && cfg.clientIp ? cfg.clientIp : '';
+        console.log('[Layout] derived clientIp =', ip);
+        if (mounted && ip) setClientIp(ip);
+      } catch (e) {
+        console.warn('[Layout] failed to fetch client IP via config:get', e && e.message);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
   useEffect(() => {
     if (!lastAsrUpdate || !lastAsrUpdate.id) return;
     if (view === 'monitor') {
@@ -312,7 +334,10 @@ export const Layout = () => {
 
   return (
     <div className="app-container">
-      <div className="version-badge">v{packageInfo.version}</div>
+      <div className="version-tags">
+        <div className="info-tag">{`v${packageInfo.version}`}</div>
+        {clientIp ? <div className="info-tag">{clientIp}</div> : null}
+      </div>
       <Sidebar onOpenSettings={() => setSettingsOpen(true)} onShowMonitor={()=>setView('monitor')} onSelectHistory={handleSelectHistory} />
       <div className="main-content">
         {view === 'monitor' && <MonitorView onClose={() => setView('none')} />}

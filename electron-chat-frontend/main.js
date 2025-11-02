@@ -3,6 +3,16 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const os = require('os');
+const net = require('net');
+
+// Safe defaults if config module throws
+const DEFAULT_SAFE_CFG = {
+  backendHost: '127.0.0.1:8000',
+  useHttps: false,
+  devServerHost: 'localhost:5173',
+  exampleServerHost: 'localhost:8080'
+};
 
 const APP_DISPLAY_NAME = '12345智能助手';
 const APP_VERSION = (typeof app.getVersion === 'function' && app.getVersion()) || require('./package.json').version;
@@ -165,7 +175,41 @@ app.whenReady().then(async () => {
 
 // Config IPC to unify renderer and main
 ipcMain.handle('config:get', async () => {
-  try { return getConfig(); } catch { return null; }
+  let cfg;
+  try {
+    cfg = getConfig();
+  } catch (e) {
+    console.warn('[main] config:get getConfig() threw, using DEFAULT_SAFE_CFG:', e && e.message);
+    cfg = DEFAULT_SAFE_CFG;
+  }
+  let ip = '0.0.0.0';
+  try {
+    if (typeof getLocalIPv4 === 'function') {
+      ip = getLocalIPv4();
+    }
+    if (!ip || ip === '127.0.0.1' || ip === '0.0.0.0') {
+      // Fallback: determine outbound local address by opening a short-lived socket
+      ip = await new Promise((resolve) => {
+        try {
+          const socket = net.createConnection({ host: '8.8.8.8', port: 53 });
+          let finished = false;
+          const finish = (addr) => {
+            if (finished) return; finished = true;
+            try { socket.destroy(); } catch(_) {}
+            resolve(addr || '0.0.0.0');
+          };
+          socket.once('connect', () => finish(socket.localAddress));
+          socket.once('error', () => finish('0.0.0.0'));
+          setTimeout(() => finish('0.0.0.0'), 400);
+        } catch (_) { resolve('0.0.0.0'); }
+      });
+    }
+  } catch (e) {
+    console.warn('[main] getLocalIPv4 threw:', e && e.message);
+  }
+  const merged = Object.assign({}, cfg || {}, { clientIp: ip });
+  try { console.log('[main] config:get returns', merged); } catch(_) {}
+  return merged;
 });
 ipcMain.handle('config:set', async (_e, partial) => {
   try {
@@ -602,6 +646,63 @@ ipcMain.handle('history:list', async () => {
       ticketTitle: meta.ticketTitle || null
     };
   });
+});
+
+// Provide the first non-internal IPv4 address of this machine to renderer
+function getLocalIPv4() {
+  try {
+    const ifaces = os.networkInterfaces();
+    const names = Object.keys(ifaces || {});
+    try { console.log('[main] getLocalIPv4: interfaces =', names); } catch(_) {}
+
+    const preferTokens = ['ethernet', '以太网', 'wi-fi', 'wifi', 'wlan', 'lan', 'en', 'eth'];
+    const candidates = [];
+    for (const name of names) {
+      const list = ifaces[name] || [];
+      for (const net of list) {
+        const family = typeof net.family === 'string' ? net.family : (net.family === 4 ? 'IPv4' : String(net.family));
+        const address = net.address;
+        if (family !== 'IPv4') continue;
+        if (!address || address === '127.0.0.1' || address === '0.0.0.0') continue;
+        const lower = (name || '').toLowerCase();
+        const preferred = preferTokens.some(t => lower.includes(t));
+        const cand = { name, address, internal: !!net.internal, preferred };
+        candidates.push(cand);
+        try { console.log('[main] getLocalIPv4: candidate', cand); } catch(_) {}
+      }
+    }
+    const byPref = candidates.find(c => !c.internal && c.preferred) ||
+                   candidates.find(c => !c.internal) ||
+                   candidates[0];
+    if (byPref) {
+      try { console.log('[main] getLocalIPv4: selected', byPref); } catch(_) {}
+      return byPref.address;
+    }
+  } catch (e) {
+    console.warn('[main] getLocalIPv4 failed:', e && e.message);
+  }
+  return '0.0.0.0';
+}
+
+ipcMain.handle('system:client-ip', async () => {
+  try {
+    let ip = typeof getLocalIPv4 === 'function' ? getLocalIPv4() : '0.0.0.0';
+    if (!ip || ip === '127.0.0.1' || ip === '0.0.0.0') {
+      ip = await new Promise((resolve) => {
+        try {
+          const socket = net.createConnection({ host: '8.8.8.8', port: 53 });
+          let finished = false;
+          const finish = (addr) => { if (finished) return; finished = true; try { socket.destroy(); } catch(_) {}; resolve(addr || '0.0.0.0'); };
+          socket.once('connect', () => finish(socket.localAddress));
+          socket.once('error', () => finish('0.0.0.0'));
+          setTimeout(() => finish('0.0.0.0'), 400);
+        } catch (_) { resolve('0.0.0.0'); }
+      });
+    }
+    return ip || '0.0.0.0';
+  } catch (_) {
+    return '0.0.0.0';
+  }
 });
 ipcMain.handle('history:load', async (_e, id) => {
   ensureConversationsDir();
