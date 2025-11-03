@@ -6,7 +6,7 @@ set -e
 
 # 配置
 MODEL_NAME="deepseek-r1:14b"
-NODE_PORTS=(11434 11435 11436)  # 可根据需要添加更多端口
+NODE_PORTS=(11434 11435 11436 11437)  # 可根据需要添加更多端口
 BASE_DIR="/tmp/ollama"
 # 共享模型目录（所有节点共用，避免重复下载）
 SHARED_MODELS_DIR="${OLLAMA_MODELS:-$HOME/.ollama/models}"
@@ -36,9 +36,10 @@ for PORT in "${NODE_PORTS[@]}"; do
         continue
     fi
 
-    # 启动Ollama服务（共享模型目录）
+    # 启动Ollama服务（共享模型目录，1小时无调用后释放显存）
     OLLAMA_HOST=127.0.0.1:$PORT \
     OLLAMA_MODELS="$SHARED_MODELS_DIR" \
+    OLLAMA_KEEP_ALIVE=1h \
     nohup ollama serve > "$NODE_DIR/ollama.log" 2>&1 &
 
     PID=$!
