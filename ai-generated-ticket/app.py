@@ -62,6 +62,9 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 2
 REQUEST_TIMEOUT = 60
 
+# Ollama 模型配置
+OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'deepseek-r1:14b')
+
 # DeepSeek节点配置（从环境变量读取，支持逗号分隔的多个端点）
 DEEPSEEK_ENDPOINTS_ENV = os.environ.get(
     'DEEPSEEK_ENDPOINTS',
@@ -231,12 +234,14 @@ class LocationCorrector:
 用户输入的地名："{raw_zone}"
 
 任务要求：
-1. 识别可能的错别字（同音字、形近字、方言读音等）
-2. 返回最匹配的标准地名
-3. 格式要求：
+1. 【重要】仅矫正地名库中存在的标准地名，不要编造或猜测不存在的地名
+2. 识别可能的错别字（同音字、形近字、方言读音等）
+3. 返回最匹配的标准地名
+4. 格式要求：
    - 保持原有格式（如果输入是"六安市霍邱县冯岭镇拱岗村"，输出也应该是完整地址格式）
    - 只矫正地名中的错别字，不要改变地址结构
-   - 村名、小区名等可以保留原文
+   - 村名、小区名等如果不在地名库中，必须保留原文不变
+   - 如果无法确定匹配，直接返回原文
 
 示例：
 输入："六安市霍邱县冯岭镇拱岗村"
@@ -255,7 +260,7 @@ class LocationCorrector:
 
         try:
             payload = {
-                "model": "deepseek-r1:14b",
+                "model": OLLAMA_MODEL,
                 "prompt": prompt,
                 "stream": False,
                 "options": {
@@ -337,6 +342,10 @@ class TicketSummarizer:
         self.location_corrector = location_corrector
         self.system_prompt = (
             "你是12345市民热线工单总结员，负责将通话内容转化为规范的工单记录。\n\n"
+            "【核心原则】\n"
+            "1. 【禁止编造】严格基于通话记录提取信息，不得添加、推测或编造任何未提及的内容\n"
+            "2. 【忠实原文】如实记录对话中的表述，保留关键原话\n"
+            "3. 【信息完整】对话中提到的所有关键信息（姓名、电话、地址、金额、时间等）必须全部记录\n\n"
             f"【地区背景知识】\n{LOCATION_CONTEXT}\n\n"
             "【重要】你必须严格按照以下JSON格式输出，字段名称不能改变：\n"
             "```json\n"
@@ -353,8 +362,9 @@ class TicketSummarizer:
             "   - 求助：涉及个人事项，因主观或客观原因个人无能为力解决，需要政府帮助才能解决\n"
             "   - 举报：举报他人违法违规行为，需要执法部门依法查处\n"
             "   - 投诉：除上述三类之外的其他诉求\n"
-            "2. ticket_zone：尽可能详细的地址（格式：市-区/县-乡镇/街道-村/社区-小区名）\n"
+            "2. ticket_zone：【仅根据对话内容填写】尽可能详细的地址（格式：市-区/县-乡镇/街道-村/社区-小区名）\n"
             '   例如："六安市霍邱县三流乡三桥村" 或 "六安市金安区三十铺镇阳光花园小区"\n'
+            '   【重要】如果对话中未明确提及地址，填写"未提及"\n'
             "3. ticket_title：一句话概括主要诉求（15字以内）\n"
             '4. ticket_content：分为两部分，格式为"来电人咨询：[市民反映内容] 话务员解答内容：[话务员回复]"\n'
             '   【重要】必须使用第三人称客观叙述，不要使用"我"、"您"等第一、第二人称\n'
@@ -366,7 +376,8 @@ class TicketSummarizer:
             "     * 数字信息尽量使用阿拉伯数字表示\n"
             "     * 不要重复ticket_zone中的地区信息\n"
             '     * 使用"来电人"、"市民"、"当事人"等第三人称\n'
-            "   - 话务员解答内容：【重要】必须详细记录话务员的所有解答信息，字数控制在100字以内，必须包含：\n"
+            '     * 【禁止编造】如果对话中未提及某项信息，不要编造\n'
+            "   - 话务员解答内容：【重要】必须详细记录话务员的所有解答信息，必须包含：\n"
             "     * 话务员提供的所有解决方案或办理流程（多个方案需逐一列出）\n"
             "     * 涉及的重要个人信息：姓名、身份证号码、联系方式等（如有）\n"
             "     * 涉及的部门名称、联系电话、办公地址、办公时间（如有）\n"
@@ -376,12 +387,14 @@ class TicketSummarizer:
             "     * 话务员承诺的后续跟进措施（如转办、回访等）\n"
             '     * 使用"话务员"、"工作人员"等第三人称\n'
             '     * 使用数字序号(1. 2. 3.)组织多个要点，确保信息完整清晰\n'
+            '     * 【禁止编造】如果话务员未解答或未提供信息，如实记录"话务员表示将进一步核实"等\n'
             '   示例1："来电人咨询：市民询问居民医保如何暂停参保。话务员解答内容：话务员已告知市民有3种办理方式：1. 携带相关证件前往政务中心办理停保；2. 线上添加办公QQ号123456789，上传身份证正反面照片办理；3. 本人通过手机微信小程序\'安徽医保公共服务\'线上办理。"\n'
             '   示例2："来电人咨询：市民张某（身份证号：342522********1234）反映其2024年1月缴纳的医保费用5000元未到账。话务员解答内容：话务员已记录市民姓名张某、身份证号342522********1234、联系电话138****5678，承诺将工单转交市医保局核实，预计3个工作日内电话回复处理结果。如需加急可拨打医保局咨询电话0564-1234567（工作日9:00-17:00）。"\n\n'
             "【输出规则】\n"
             "- 只输出JSON，不要任何额外解释\n"
             "- 字段名称必须完全一致，不能使用其他名称\n"
-            "- 所有字段都是必填项"
+            "- 所有字段都是必填项\n"
+            "- 【再次强调】严禁编造对话中未提及的信息"
         )
 
     def format_conversation(self, conversation_data: Dict[str, List[Dict]]) -> str:
@@ -399,9 +412,9 @@ class TicketSummarizer:
         return formatted_text
 
     def call_deepseek_model(self, prompt: str) -> str:
-        """调用 DeepSeek 模型（使用负载均衡）"""
+        """调用 Ollama 模型（使用负载均衡）"""
         payload = {
-            "model": "deepseek-r1:14b",
+            "model": OLLAMA_MODEL,
             "prompt": prompt,
             "system": self.system_prompt,
             "stream": False,
@@ -432,7 +445,7 @@ class TicketSummarizer:
             return result.get('response', '').strip()
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"调用 DeepSeek 模型失败 (节点: {endpoint}): {e}")
+            logger.error(f"调用 Ollama 模型失败 (节点: {endpoint}): {e}")
             # 标记节点为不健康
             load_balancer.mark_unhealthy(endpoint)
             raise HTTPException(status_code=500, detail=f"模型调用失败: {str(e)}")
@@ -532,18 +545,23 @@ class TicketSummarizer:
 通话记录：
 {formatted_conversation}
 
+【重要提醒】
+1. 严格基于上述通话记录，不要添加任何未提及的信息
+2. 如果对话中没有明确提到地址，ticket_zone 必须填写"未提及"
+3. 如果话务员未提供解答，如实记录实际情况
+
 请严格按照以下格式输出JSON（字段名称不能改变）：
 {{
   "ticket_type": "咨询|求助|举报|投诉 之一",
-  "ticket_zone": "详细地址（例如：六安市金安区三十铺镇水韵东方小区）",
+  "ticket_zone": "详细地址（例如：六安市金安区三十铺镇水韵东方小区）或"未提及"",
   "ticket_title": "一句话概括",
-  "ticket_content": "来电人咨询：[使用第三人称客观描述市民反映的内容，不要用"我"、"您"，要用"市民"、"来电人"等称呼，包括门牌号、手机号、金额、时间等具体信息，数字使用阿拉伯数字] 话务员解答内容：[【重要】必须详细记录话务员的所有解答信息，字数控制在100字以内，包括：姓名、身份证号码、联系方式、部门电话、办理流程、时间节点、费用信息、后续跟进措施等（如有），使用第三人称，用数字序号组织多个要点]"
+  "ticket_content": "来电人咨询：[使用第三人称客观描述市民反映的内容，不要用"我"、"您"，要用"市民"、"来电人"等称呼，包括门牌号、手机号、金额、时间等具体信息，数字使用阿拉伯数字，禁止编造未提及的信息] 话务员解答内容：[【重要】必须详细完整记录话务员的所有解答信息，包括：姓名、身份证号码、联系方式、部门电话、办理流程、时间节点、费用信息、后续跟进措施等（如有），使用第三人称，用数字序号组织多个要点，禁止编造]"
 }}
 
 重要提示：
 1. ticket_content必须使用第三人称客观叙述，避免第一、第二人称
-2. 话务员解答部分必须详细完整，特别要记录姓名、身份证号码等关键个人信息
-3. 话务员解答字数控制在100字以内，但要确保关键信息完整"""
+2. 话务员解答部分必须详细完整，特别要记录姓名、身份证号码等关键个人信息，确保所有解答信息完整记录
+3. 【禁止编造】严格忠实于通话记录原文"""
 
         last_error = None
 
@@ -722,7 +740,8 @@ async def summarize_ticket(request: Request):
 
 if __name__ == "__main__":
     logger.info("启动 12345 市民热线工单总结服务")
-    logger.info(f"DeepSeek 负载均衡配置:")
+    logger.info(f"Ollama 模型配置: {OLLAMA_MODEL}")
+    logger.info(f"负载均衡配置:")
     logger.info(f"  - 节点数量: {len(DEEPSEEK_ENDPOINTS)}")
     for i, ep in enumerate(DEEPSEEK_ENDPOINTS, 1):
         logger.info(f"  - 节点{i}: {ep}")

@@ -5,7 +5,7 @@
 set -e
 
 # 配置
-MODEL_NAME="deepseek-r1:14b"
+MODEL_NAME="${OLLAMA_MODEL:-qwen2.5:14b-instruct}"  # 可通过环境变量覆盖
 NODE_PORTS=(11434 11435 11436 11437)  # 可根据需要添加更多端口
 BASE_DIR="/tmp/ollama"
 # 共享模型目录（所有节点共用，避免重复下载）
@@ -111,11 +111,13 @@ echo "环境变量配置:"
 ENDPOINTS=$(printf "http://127.0.0.1:%s/api/generate," "${NODE_PORTS[@]}")
 ENDPOINTS=${ENDPOINTS%,}  # 移除末尾逗号
 echo "export DEEPSEEK_ENDPOINTS=\"$ENDPOINTS\""
+echo "export OLLAMA_MODEL=\"$MODEL_NAME\""
 
 # 导出环境变量
 export DEEPSEEK_ENDPOINTS="$ENDPOINTS"
+export OLLAMA_MODEL="$MODEL_NAME"
 echo ""
-echo "✓ 环境变量已设置: DEEPSEEK_ENDPOINTS"
+echo "✓ 环境变量已设置: DEEPSEEK_ENDPOINTS, OLLAMA_MODEL"
 
 echo ""
 echo "启动工单服务..."
@@ -142,12 +144,12 @@ mkdir -p "$SERVICE_LOG_DIR"
 SERVICE_LOG_FILE="$SERVICE_LOG_DIR/service.log"
 SERVICE_PID_FILE="$BASE_DIR/service.pid"
 
-echo "使用命令: $PYTHON_CMD app.py"
+echo "使用命令: OLLAMA_MODEL=$MODEL_NAME $PYTHON_CMD app.py"
 echo "日志文件: $SERVICE_LOG_FILE"
 echo ""
 
-# 后台启动服务
-nohup $PYTHON_CMD app.py > "$SERVICE_LOG_FILE" 2>&1 &
+# 后台启动服务（传递OLLAMA_MODEL环境变量）
+OLLAMA_MODEL="$MODEL_NAME" nohup $PYTHON_CMD app.py > "$SERVICE_LOG_FILE" 2>&1 &
 SERVICE_PID=$!
 
 # 保存PID
